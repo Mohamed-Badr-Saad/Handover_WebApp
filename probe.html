@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handover - Browser Capability Probe</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    max-width: 820px; margin: 0 auto; padding: 24px 18px 60px;
+    line-height: 1.5; background: #fbfbfc; color: #1a1a1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #131316; color: #e8e8ea; }
+    .card { background: #1c1c20 !important; border-color: #33333a !important; }
+    code { background: #26262c !important; }
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1rem; margin: 26px 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .65; }
+  p.lede { margin: 0 0 20px; opacity: .8; }
+  .card { background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 4px 16px; }
+  .row { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(128,128,140,.18); align-items: baseline; }
+  .row:last-child { border-bottom: 0; }
+  .badge { flex: 0 0 auto; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; letter-spacing: .04em; }
+  .pass { background: #d8f3e0; color: #10632f; }
+  .fail { background: #fbdcdc; color: #8c1d1d; }
+  .warn { background: #fdeecd; color: #79520a; }
+  .name { flex: 1 1 auto; }
+  .detail { display: block; font-size: .82rem; opacity: .7; margin-top: 2px; word-break: break-word; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; margin: 18px 0 6px;
+    background: #2a5bd7; color: #fff; border: 0; border-radius: 8px; padding: 11px 20px;
+  }
+  button:hover { background: #2049b4; }
+  button:disabled { opacity: .5; cursor: default; }
+  code { background: #f0f0f3; padding: 1px 5px; border-radius: 4px; font-size: .88em; }
+  #verdict { margin-top: 26px; padding: 14px 16px; border-radius: 10px; font-weight: 600; display: none; }
+  .v-ok { background: #d8f3e0; color: #10632f; }
+  .v-no { background: #fbdcdc; color: #8c1d1d; }
+</style>
+</head>
+<body>
+
+<h1>Plant Handover - browser capability probe</h1>
+<p class="lede">Checks whether this PC's browser can run the Handover app straight from the file share, with no server and no installation. Run this on a normal plant PC, opened the same way staff would open the app.</p>
+
+<h2>Checks that run automatically</h2>
+<div class="card" id="static"></div>
+
+<h2>Read / write test</h2>
+<p class="lede" style="margin-bottom:0">Click below and choose <strong>any folder on the file share</strong> you can write to. The test creates a folder called <code>_handover_probe</code>, writes and re-reads a file, then deletes it again.</p>
+<button id="run">Choose a folder and test</button>
+<div class="card" id="live"></div>
+
+<div id="verdict"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var DB_NAME = "handover_probe";
+  var STORE = "handles";
+
+  function add(container, name, state, detail) {
+    var labels = { pass: "PASS", fail: "FAIL", warn: "NOTE" };
+    var row = document.createElement("div");
+    row.className = "row";
+    var b = document.createElement("span");
+    b.className = "badge " + state;
+    b.textContent = labels[state];
+    var n = document.createElement("span");
+    n.className = "name";
+    n.textContent = name;
+    if (detail) {
+      var d = document.createElement("span");
+      d.className = "detail";
+      d.textContent = detail;
+      n.appendChild(d);
+    }
+    row.appendChild(b);
+    row.appendChild(n);
+    document.getElementById(container).appendChild(row);
+  }
+
+  // ---------- automatic checks ----------
+
+  var proto = location.protocol;
+  add("static", "Opened as " + proto + "//",
+      proto === "file:" ? "pass" : "warn",
+      proto === "file:"
+        ? "Opened directly from disk or the share - this is how staff will open it."
+        : "Served over " + proto + " - note the real deployment will be file:// from the share.");
+
+  add("static", "Secure context", window.isSecureContext ? "pass" : "fail",
+      window.isSecureContext ? "" : "The File System Access API is unavailable without this.");
+
+  var hasFSA = typeof window.showDirectoryPicker === "function";
+  add("static", "File System Access API", hasFSA ? "pass" : "fail",
+      hasFSA ? "showDirectoryPicker() is available."
+             : "Missing. Use Microsoft Edge or Google Chrome; Firefox and Safari do not support it.");
+
+  add("static", "Browser", "warn", navigator.userAgent);
+
+  add("static", "crypto.randomUUID()",
+      (window.crypto && typeof crypto.randomUUID === "function") ? "pass" : "fail",
+      "Used to give every handover a unique filename.");
+
+  try {
+    localStorage.setItem("__probe", "1");
+    localStorage.removeItem("__probe");
+    add("static", "localStorage", "pass", "Language choice and the signed-in name can be remembered.");
+  } catch (e) {
+    add("static", "localStorage", "fail", String(e));
+  }
+
+  try {
+    var ar = new Intl.DateTimeFormat("ar-EG", { dateStyle: "long" }).format(new Date());
+    add("static", "Arabic date formatting", "pass", ar);
+  } catch (e) {
+    add("static", "Arabic date formatting", "fail", String(e));
+  }
+
+  // IndexedDB - needed to remember the chosen folder between sessions
+  function openDb() {
+    return new Promise(function (resolve, reject) {
+      var req;
+      try { req = indexedDB.open(DB_NAME, 1); }
+      catch (e) { reject(e); return; }
+      req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error || new Error("indexedDB blocked")); };
+      req.onblocked = function () { reject(new Error("indexedDB blocked")); };
+    });
+  }
+
+  function idbPut(key, value) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(value, key);
+        tx.oncomplete = function () { resolve(true); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function idbGet(key) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE, "readonly");
+        var r = tx.objectStore(STORE).get(key);
+        r.onsuccess = function () { resolve(r.result); };
+        r.onerror = function () { reject(r.error); };
+      });
+    });
+  }
+
+  // Did a previous run leave a folder handle behind?
+  idbGet("folder").then(function (handle) {
+    if (!handle) {
+      add("static", "Remembered folder from a previous run", "warn",
+          "None yet. Run the test below, then reload this page - it should then say the folder was remembered.");
+      return;
+    }
+    if (!handle.queryPermission) {
+      add("static", "Remembered folder from a previous run", "warn", "Stored, but permission cannot be checked.");
+      return;
+    }
+    return handle.queryPermission({ mode: "readwrite" }).then(function (state) {
+      add("static", "Remembered folder from a previous run",
+          state === "granted" ? "pass" : "warn",
+          state === "granted"
+            ? "Folder '" + handle.name + "' reopened with no new prompt."
+            : "Folder '" + handle.name + "' remembered, but the browser will ask to confirm access once per session (permission: " + state + ").");
+    });
+  }).catch(function (e) {
+    add("static", "IndexedDB (remembering the folder)", "fail",
+        String(e) + " - staff would have to re-pick the folder every time they open the app.");
+  });
+
+  // ---------- interactive read / write test ----------
+
+  var btn = document.getElementById("run");
+  if (!hasFSA) { btn.disabled = true; }
+
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    document.getElementById("live").innerHTML = "";
+    runTest().then(function (ok) {
+      var v = document.getElementById("verdict");
+      v.style.display = "block";
+      if (ok) {
+        v.className = "v-ok";
+        v.textContent = "This PC can run the Handover app from the share with no server. Reload this page to confirm the folder is remembered.";
+      } else {
+        v.className = "v-no";
+        v.textContent = "Something above failed - the app would need a different approach on this PC. Send the results to Claude.";
+      }
+      btn.disabled = false;
+    });
+  });
+
+  function runTest() {
+    var dir, testDir, fileHandle;
+    var failed = false;
+    function step(name, state, detail) {
+      if (state === "fail") { failed = true; }
+      add("live", name, state, detail);
+    }
+
+    return window.showDirectoryPicker({ mode: "readwrite" })
+      .then(function (d) {
+        dir = d;
+        step("Folder chosen", "pass", d.name);
+        return dir.requestPermission ? dir.requestPermission({ mode: "readwrite" }) : "granted";
+      })
+      .then(function (perm) {
+        step("Write permission", perm === "granted" ? "pass" : "fail", "permission: " + perm);
+        return dir.getDirectoryHandle("_handover_probe", { create: true });
+      })
+      .then(function (d) {
+        testDir = d;
+        step("Created a sub-folder", "pass", "_handover_probe");
+        return testDir.getFileHandle("record.json.tmp", { create: true });
+      })
+      .then(function (fh) {
+        fileHandle = fh;
+        return fh.createWritable();
+      })
+      .then(function (w) {
+        return w.write(JSON.stringify({ id: crypto.randomUUID(), title: "Test handover", ts: Date.now() })).then(function () { return w.close(); });
+      })
+      .then(function () {
+        step("Wrote a temporary file", "pass", "record.json.tmp");
+        // The atomic-write pattern the app depends on: write .tmp, then rename over the real file.
+        if (typeof fileHandle.move === "function") {
+          return fileHandle.move("record.json").then(function () {
+            step("Renamed .tmp over the real file (atomic write)", "pass",
+                 "Safe saves - other users can never read a half-written record.");
+          }).catch(function (e) {
+            step("Renamed .tmp over the real file (atomic write)", "warn",
+                 "move() failed: " + e + " - the app will fall back to writing in place.");
+          });
+        }
+        step("Renamed .tmp over the real file (atomic write)", "warn",
+             "move() unsupported here - the app will fall back to writing in place.");
+        return null;
+      })
+      .then(function () {
+        return testDir.getFileHandle("record.json").catch(function () { return fileHandle; });
+      })
+      .then(function (fh) { return fh.getFile(); })
+      .then(function (f) { return f.text(); })
+      .then(function (text) {
+        var ok = false;
+        try { ok = !!JSON.parse(text).id; } catch (e) {}
+        step("Read the file back", ok ? "pass" : "fail", ok ? text.slice(0, 90) : "Could not parse: " + text);
+        var names = [];
+        var it = testDir.values();
+        function walk() {
+          return it.next().then(function (r) {
+            if (r.done) { return names; }
+            names.push(r.value.name);
+            return walk();
+          });
+        }
+        return walk();
+      })
+      .then(function (names) {
+        step("Listed folder contents", names.length ? "pass" : "fail", names.join(", ") || "empty");
+        return idbPut("folder", dir).then(function () {
+          step("Remembered the folder for next time", "pass", "Stored in the browser - reload to confirm.");
+        }).catch(function (e) {
+          step("Remembered the folder for next time", "fail", String(e));
+        });
+      })
+      .then(function () {
+        return dir.removeEntry("_handover_probe", { recursive: true }).then(function () {
+          step("Cleaned up the test folder", "pass", "_handover_probe removed");
+        }).catch(function (e) {
+          step("Cleaned up the test folder", "warn", "Please delete _handover_probe by hand: " + e);
+        });
+      })
+      .then(function () { return !failed; })
+      .catch(function (e) {
+        if (e && e.name === "AbortError") {
+          add("live", "Folder chosen", "warn", "Cancelled - nothing was tested.");
+          return false;
+        }
+        add("live", "Test stopped with an error", "fail", (e && e.name ? e.name + ": " : "") + e);
+        return false;
+      });
+  }
+})();
+</script>
+</body>
+</html>

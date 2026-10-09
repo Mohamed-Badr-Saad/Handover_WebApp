@@ -1,0 +1,39 @@
+# Plant Handover - only the app and the user procedure are tracked.
+# Everything else (the live database, old Excel sheets, import files,
+# packaged .rar copies, passwords) stays out of the repository.
+
+# 1. Ignore everything by default
+/*
+
+# 2. Allow the app
+!/.gitignore
+!/index.html
+!/probe.html
+!/css/
+!/js/
+!/img/
+
+# 3. Allow the user procedure
+!/Plant_Handover_User_Procedure.docx
+
+# 4. Safety net: never commit these, wherever they appear
+*.rar
+*.zip
+*.7z
+password*.txt
+HandoverData/
+data/
+old-handovers-import/
+Old Handover sheets/
+handover-archive.json
+import-review.csv
+instruments.json
+*.xlsx
+*.xls
+*.csv
+*.tmp
+*.lock
+*.wlock
+~$*
+Thumbs.db
+desktop.ini
