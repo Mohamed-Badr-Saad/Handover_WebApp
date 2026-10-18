@@ -468,6 +468,7 @@
       else if (head === "handovers") { await global.Views.handoverList(query); }
       else if (head === "handover") {
         if (parts[1] === "new") { requireUser(function () { global.Views.handoverForm("new"); }); }
+        else if (parts[1] === "import") { requireUser(function () { global.Views.handoverImport(query); }); }
         else if (parts[2] === "edit") {
           state.activeLockId = parts[1];
           requireUser(function () { global.Views.handoverForm(parts[1]); });

@@ -74,14 +74,17 @@
     var st = S.structure();
     var tagHtml = (h.tags || []).slice(0, 4).map(function (no) { return tagChip(no); }).join(" ");
     var more = (h.tags || []).length > 4 ? ' <span class="faint small">+' + ((h.tags || []).length - 4) + "</span>" : "";
-    var when = h.archived
+    var when = (h.archived || (h.importedFrom && h.updatedAt === h.createdAt))
       ? (h.createdAt ? global.Fmt.date(h.createdAt) : t("arc.dateUnknown"))
       : global.Fmt.ago(h.updatedAt);
     var place = h.area ? label(st.areas, h.area) : (h.location || "");
     return '<div class="row-card" data-id="' + esc(h.id) + '">' +
       '<div class="r1">' +
-        "<h4>" + esc(h.title || "—") + "</h4>" + statusBadge(h.status) +
+        "<h4>" + esc(h.title || "—") + "</h4>" +
+        (unseenSet[h.id] ? '<span class="badge s-unseen">' + esc(t("ho.unseenBadge")) + "</span>" : "") +
+        statusBadge(h.status) +
         (h.archived ? archiveBadge(h) : "") +
+        (h.restricted ? restrictedBadge() : "") +
       "</div>" +
       (h.snippet ? '<div class="snippet">' + esc(h.snippet) + "</div>" : "") +
       '<div class="r2">' +
@@ -93,6 +96,10 @@
       "</div>" +
       "<div class=\"chips\" style=\"margin-top:8px\">" + tagHtml + more + "</div>" +
       "</div>";
+  }
+
+  function restrictedBadge() {
+    return '<span class="badge s-restricted" title="' + esc(t("mgr.notice")) + '"><svg viewBox="0 0 24 24" width="11" height="11" style="vertical-align:-1px;margin-inline-end:3px"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z"/></svg>' + esc(t("mgr.badge")) + "</span>";
   }
 
   function archiveBadge(h) {
@@ -137,6 +144,8 @@
     function mine(h) { return me && h.createdBy && h.createdBy.id === me.id; }
     var myDrafts = all.filter(function (h) { return h.status === "draft" && mine(h); });
     var mySubmitted = all.filter(function (h) { return h.status !== "draft" && mine(h); });
+    var unseen = await unseenIds(true);
+    var notSeen = all.filter(function (h) { return unseen[h.id]; });
 
     var byArea = {}, byType = {};
     lastMonth.forEach(function (h) {
@@ -180,6 +189,7 @@
         stat(followUps.length, t("dash.followUps"), "#/handovers?s=" + S.FOLLOWUP + "&d=month") +
         stat(mySubmitted.length, t("dash.mySubmitted"), "#/handovers?s=notdraft&mine=1") +
         stat(myDrafts.length, t("dash.myDrafts"), "#/handovers?s=draft&mine=1") +
+        stat(notSeen.length, t("dash.notSeen"), "#/handovers?s=unseen", notSeen.length > 0 ? "attn" : "") +
       "</div>" +
 
       '<div class="grid two" style="margin-top:16px">' +
@@ -213,7 +223,8 @@
   }
 
   function stat(n, labelText, href, alert) {
-    return '<div class="stat' + (alert ? " alert" : "") + '" data-go="' + esc(href) + '">' +
+    var cls = alert === true ? " alert" : (alert ? " " + alert : "");
+    return '<div class="stat' + cls + '" data-go="' + esc(href) + '">' +
       '<div class="n">' + global.Fmt.num(n) + "</div>" +
       '<div class="l">' + esc(labelText) + "</div></div>";
   }
@@ -229,7 +240,7 @@
     var all = await S.listHandovers();
 
     if (query) {
-      if (query.s && (S.STATUSES.indexOf(query.s) >= 0 || query.s === "notdraft")) { listFilters.status = query.s; }
+      if (query.s && (S.STATUSES.indexOf(query.s) >= 0 || query.s === "notdraft" || query.s === "unseen")) { listFilters.status = query.s; }
       if (query.d === "today") { listFilters.from = global.Fmt.isoDay(new Date()); listFilters.to = ""; }
       if (query.tag) { listFilters.q = query.tag; }
       if (query.d === "week") { listFilters.from = daysAgo(6); listFilters.to = ""; }
@@ -238,16 +249,20 @@
     }
 
     var statusOptions = ['<option value="">' + esc(t("ho.status")) + " \u2013 " + esc(t("common.all")) + "</option>",
+      '<option value="unseen">' + esc(t("ho.unseen")) + "</option>",
       '<option value="notdraft">' + esc(t("ho.notDraft")) + "</option>"]
       .concat(S.STATUSES.map(function (s) { return '<option value="' + s + '">' + esc(t("status." + s)) + "</option>"; }))
       .join("");
 
     var hasArchive = all.some(function (h) { return h.archived; });
+    var unseen = await unseenIds(true);
     var shown = LIST_PAGE;
 
     view().innerHTML =
       '<div class="page-head"><div><h1>' + esc(t("ho.list")) + "</h1><p>" + esc(t("ho.listSub")) + "</p></div>" +
-        '<div class="spacer"></div><button class="btn primary" id="new-ho">' + esc(t("ho.new")) + "</button></div>" +
+        '<div class="spacer"></div><div class="btn-row">' +
+          '<button class="btn" id="imp-open">' + esc(t("imp.open")) + "</button>" +
+          '<button class="btn primary" id="new-ho">' + esc(t("ho.new")) + "</button></div></div>" +
 
       '<div class="filters">' +
         '<input type="search" id="f-q" placeholder="' + esc(t("search.placeholder")) + '" style="min-width:230px">' +
@@ -297,7 +312,8 @@
       var q = global.Util.normalize(listFilters.q);
       var now = new Date();
       var rows = all.filter(function (h) {
-        if (listFilters.status === "notdraft") { if (h.status === "draft") { return false; } }
+        if (listFilters.status === "unseen") { if (!unseen[h.id]) { return false; } }
+        else if (listFilters.status === "notdraft") { if (h.status === "draft") { return false; } }
         else if (listFilters.status && h.status !== listFilters.status) { return false; }
 
         if (listFilters.area && h.area !== listFilters.area) { return false; }
@@ -360,6 +376,7 @@
       handoverList(null);
     });
     $("#f-export").addEventListener("click", function () { exportHandovers(lastListRows); });
+    $("#imp-open").addEventListener("click", function () { go("#/handover/import"); });
     $("#new-ho").addEventListener("click", function () { go("#/handover/new"); });
 
     render();
@@ -441,6 +458,7 @@
   function peopleOptions(selected) {
     var groups = [
       { label: t("ho.engineers"), roles: ["engineer"] },
+      { label: t("ho.managers"), roles: ["manager"] },
       { label: t("ho.supervisors"), roles: ["supervisor"] },
       { label: t("ho.technicians"), roles: ["technician"] },
       { label: t("ho.others"), roles: ["administrator", "viewer", ""] }
@@ -489,7 +507,9 @@
     var chosenTeam = rec ? (rec.team || []).slice() : [];
 
     view().innerHTML =
-      '<div class="page-head"><div><h1>' + esc(isNew ? t("ho.new") : t("ho.edit")) + "</h1></div></div>" +
+      '<div class="page-head"><div><h1>' + esc(isNew ? t("ho.new") : t("ho.edit")) + "</h1></div>" +
+        (isNew ? '<div class="spacer"></div><button class="btn ghost" id="f-import">' + esc(t("imp.open")) + "</button>" : "") +
+      "</div>" +
       '<div class="card" style="max-width:840px">' +
         '<div class="field"><label>' + esc(t("ho.title")) + ' <span class="req">*</span></label>' +
           '<input class="input" id="f-title" maxlength="160" placeholder="' + esc(t("ho.titlePh")) + '">' +
@@ -718,6 +738,7 @@
             kind: chosenKind(),
             dueDate: $("#f-due").value || null,
             createdBy: { id: me.id, name: me.name },
+            restricted: me.role === "manager" ? "managers" : undefined,
             createdAt: now,
             updatedAt: now,
             history: [{ status: status, by: personName(me), byId: me.id, at: now }],
@@ -760,6 +781,7 @@
 
     $("#btn-submit").addEventListener("click", function () { save(chosenKind()); });
     if ($("#btn-draft")) { $("#btn-draft").addEventListener("click", function () { save("draft"); }); }
+    if ($("#f-import")) { $("#f-import").addEventListener("click", function () { go("#/handover/import"); }); }
     $("#btn-cancel").addEventListener("click", function () {
       if (rec && rec.id) { S.releaseLock(rec.id); go("#/handover/" + rec.id); }
       else { go("#/handovers"); }
@@ -785,17 +807,21 @@
     var st = S.structure();
     var me = global.App.user();
     var mayEdit = canEditHandover(rec);
+    markHandoverSeen(rec.id);
 
     var activity = (rec.history || []).map(function (h) {
       return { at: h.at, text: t("ho.statusChanged") + ": " + t("status." + h.status), who: h.by };
     });
     (rec.comments || []).forEach(function (c) { activity.push({ at: c.at, text: t("ho.commentAdded"), who: personName(c.by) }); });
     (rec.attachments || []).forEach(function (a) { activity.push({ at: a.at, text: t("ho.attachmentAdded") + ": " + a.name, who: a.by ? personName(a.by) : "" }); });
+    if (rec.importedFrom === "excel") {
+      activity.push({ at: rec.importedAt || rec.createdAt, text: t("imp.activity"), who: personName(rec.importedBy || rec.createdBy) });
+    }
     if (rec.archived) {
       activity.push({ at: rec.createdAt, dateOnly: true, text: t("arc.imported") + (rec.legacyStatus ? " \u00b7 " + rec.legacyStatus : ""), who: personName(rec.createdBy) });
     }
     activity.sort(function (a, b) { return String(b.at || "").localeCompare(String(a.at || "")); });
-    var createdText = rec.archived
+    var createdText = (rec.archived || rec.importedFrom)
       ? (rec.createdAt ? global.Fmt.date(rec.createdAt) : t("arc.dateUnknown"))
       : global.Fmt.dateTime(rec.createdAt);
     var authorText = personName(rec.createdBy) +
@@ -803,13 +829,14 @@
         ? " (" + t("arc.writtenAs") + " \u201c" + rec.createdBy.original + "\u201d)" : "");
     var notice = "";
     if (rec.archived) { notice = t("arc.banner", { source: rec.source || "Excel" }); }
+    else if (rec.restricted) { notice = t("mgr.notice") + (mayEdit ? "" : " " + t("own.onlyAuthor", { name: personName(rec.createdBy) })); }
     else if (!mayEdit) { notice = t("own.onlyAuthor", { name: personName(rec.createdBy) }); }
 
     view().innerHTML =
       '<div class="page-head">' +
         "<div>" +
           '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-            "<h1>" + esc(rec.title) + "</h1>" + statusBadge(rec.status) + (rec.archived ? archiveBadge(rec) : "") +
+            "<h1>" + esc(rec.title) + "</h1>" + statusBadge(rec.status) + (rec.archived ? archiveBadge(rec) : "") + (rec.restricted ? restrictedBadge() : "") +
           "</div>" +
           '<p>' + esc(t("ho.createdBy")) + " " + esc(authorText) + " · " + esc(createdText) + "</p>" +
         "</div>" +
@@ -909,7 +936,7 @@
       try {
         await S.deleteHandover(rec.id, me);
         try {
-          await S.addNotification({ type: "deleted", actor: { id: me.id, name: me.name }, handoverId: "", title: rec.title });
+          await S.addNotification({ type: "deleted", actor: { id: me.id, name: me.name }, handoverId: "", title: rec.title, restricted: rec.restricted || undefined });
         } catch (e) { /* the deletion itself succeeded */ }
         global.UI.busy(false);
         global.UI.toast(t("del.done"), "ok");
@@ -1413,6 +1440,7 @@
     if (n.type === "comment") { return t("notif.newComment", { user: who }); }
     if (n.type === "attachment") { return t("notif.newAttachment", { user: who }); }
     if (n.type === "deleted") { return t("notif.deleted", { user: who }); }
+    if (n.type === "import") { return t("notif.imported", { user: who, n: n.count || "" }); }
     if (n.type === "status") { return t("notif.statusChanged", { user: who, status: t("status." + n.status) }); }
     return n.title || "";
   }
@@ -1441,11 +1469,51 @@
   function markAllRead(me) {
     global.Prefs.set(readKey(me, "readAt"), Date.now());
     global.Prefs.set(readKey(me, "readIds"), []);
+    unseenSet = {};
+  }
+
+  /* "Not seen yet" = a handover with an unread notification for this person
+     (new handover, comment, attachment or status change by someone else).
+     Opening the handover - from anywhere - marks those notifications read.
+     The feed is read once and kept for 20 s so screens do not re-read the
+     share on every click. */
+  var notifCache = { at: 0, list: null };
+  var unseenSet = {};
+
+  async function recentNotifications(force) {
+    if (!force && notifCache.list && Date.now() - notifCache.at < 20000) { return notifCache.list; }
+    var list = [];
+    try { list = await S.listNotifications(300); } catch (e) { list = notifCache.list || []; }
+    notifCache = { at: Date.now(), list: list };
+    return list;
+  }
+
+  async function unseenIds(force) {
+    var me = global.App.user();
+    var list = await recentNotifications(force);
+    var set = {};
+    list.forEach(function (n) { if (n.handoverId && isUnread(n, me)) { set[n.handoverId] = true; } });
+    unseenSet = set;
+    return set;
+  }
+
+  async function markHandoverSeen(id) {
+    var me = global.App.user();
+    var list = await recentNotifications(false);
+    var changed = 0;
+    list.forEach(function (n) {
+      if (n.handoverId === id && isUnread(n, me)) { markRead(n, me); changed++; }
+    });
+    delete unseenSet[id];
+    if (changed) {
+      global.App.adjustUnread(-changed);
+      global.App.refreshBadges();
+    }
   }
 
   async function notifications() {
     view().innerHTML = '<div class="empty">' + esc(t("common.loading")) + "</div>";
-    var list = await S.listNotifications(300);
+    var list = await recentNotifications(true);
     var me = global.App.user();
 
     view().innerHTML =
@@ -1616,6 +1684,11 @@
         "</div>" +
         '<div class="err-msg hidden" id="pw-err"></div>' +
         '<button class="btn" id="pw-save">' + esc(t("common.save")) + "</button></div>" +
+
+      '<div class="card"><h3>' + esc(t("imp.adminCard")) + "</h3>" +
+        '<p class="small faint">' + esc(t("imp.adminCardDesc")) + "</p>" +
+        '<div class="btn-row"><button class="btn" id="bulk-tpl">' + esc(t("imp.adminDownload")) + "</button>" +
+        '<button class="btn primary" id="bulk-open">' + esc(t("imp.adminOpen")) + "</button></div></div>" +
 
       '<div class="card"><h3>' + esc(t("arc.title")) + "</h3>" +
         '<p class="small faint">' + esc(t("arc.desc")) + "</p>" +
@@ -1832,6 +1905,8 @@
         : t("arc.none");
     }
     renderArchiveStatus();
+    $("#bulk-tpl").addEventListener("click", function () { downloadTemplate(true); });
+    $("#bulk-open").addEventListener("click", function () { go("#/handover/import?mode=admin"); });
     $("#arc-btn").addEventListener("click", function () { $("#arc-file").click(); });
     $("#arc-file").addEventListener("change", async function (e) {
       var file = e.target.files && e.target.files[0];
@@ -1905,7 +1980,7 @@
   }
 
   function staffDialog(existing, onDone) {
-    var roles = ["administrator", "supervisor", "engineer", "technician", "viewer"];
+    var roles = ["administrator", "manager", "supervisor", "engineer", "technician", "viewer"];
     var body = document.createElement("div");
     body.innerHTML =
       '<div class="form-row">' +
@@ -2041,11 +2116,493 @@
     });
   }
 
+
+  /* ============================ EXCEL IMPORT ============================ */
+
+  function xmlEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  /* The templates read their dropdowns (Area, Written by, Worked with) from a
+     hidden "Lists" sheet through named ranges that grow with the list. Here
+     that sheet is rewritten with the areas and staff currently in the shared
+     folder, so a template downloaded today always offers today's choices. */
+  function templateWithLiveLists(b64) {
+    var X = global.XLSX;
+    var cfb = X.CFB.read(b64, { type: "base64" });
+    var dec = new TextDecoder("utf-8");
+    function read(p) { var e = X.CFB.find(cfb, "/" + p); return e ? dec.decode(e.content) : ""; }
+    function write(p, xml) {
+      var e = X.CFB.find(cfb, "/" + p);
+      if (!e) { return false; }
+      e.content = new TextEncoder().encode(xml);
+      e.size = e.content.length;
+      return true;
+    }
+    function sheetPath(name) {
+      var tag = new RegExp('<sheet\\b[^>]*\\bname="' + name + '"[^>]*>').exec(read("xl/workbook.xml"));
+      if (!tag) { return null; }
+      var rid = /r:id="([^"]+)"/.exec(tag[0])[1];
+      var rel = new RegExp('<Relationship\\b[^>]*Id="' + rid + '"[^>]*>').exec(read("xl/_rels/workbook.xml.rels"));
+      if (!rel) { return null; }
+      var target = /Target="([^"]+)"/.exec(rel[0])[1];
+      return target.charAt(0) === "/" ? target.slice(1) : "xl/" + target;
+    }
+    var listsPath = sheetPath("Lists");
+    if (!listsPath) { return null; }
+
+    var byName = function (a, b) { return String(a).localeCompare(String(b)); };
+    var active = S.users().filter(function (u) { return u.active !== false; });
+    var cols = {
+      A: ["Areas"].concat((S.structure().areas || []).map(function (a) { return a.id; })),
+      B: ["Status", "Info", "Info & Follow-up", "Draft"],
+      C: ["Authors"].concat(active.filter(function (u) { return ["engineer", "manager", "administrator"].indexOf(u.role) >= 0; })
+                                  .map(function (u) { return u.name; }).sort(byName)),
+      D: ["Staff"].concat(active.map(function (u) { return u.name; }).sort(byName))
+    };
+    var letters = Object.keys(cols);
+    var n = Math.max.apply(null, letters.map(function (l) { return cols[l].length; }));
+    var rows = "";
+    for (var r = 0; r < n; r++) {
+      var cells = "";
+      letters.forEach(function (l) {
+        var v = cols[l][r];
+        if (v !== undefined && v !== "") { cells += '<c r="' + l + (r + 1) + '" t="inlineStr"><is><t>' + xmlEsc(v) + "</t></is></c>"; }
+      });
+      rows += '<row r="' + (r + 1) + '">' + cells + "</row>";
+    }
+    write(listsPath, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D' + n + '"/>' +
+      "<sheetData>" + rows + "</sheetData></worksheet>");
+
+    return X.CFB.write(cfb, { fileType: "zip", type: "array", compression: true });
+  }
+
+  function downloadTemplate(admin) {
+    var b64 = admin ? global.HANDOVER_IMPORT_TEMPLATE_ADMIN : global.HANDOVER_IMPORT_TEMPLATE;
+    if (!b64) { global.UI.toast(t("err.read"), "err"); return; }
+    var bytes = null;
+    try { bytes = global.XLSX ? templateWithLiveLists(b64) : null; }
+    catch (e) { S.log("template: could not insert live lists", e && e.message); bytes = null; }
+    if (!bytes) {      // fall back to the template as shipped
+      var bin = atob(b64);
+      bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+    }
+    var blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = admin ? "Handover_Bulk_Import_Template_Admin.xlsx" : "Handover_Import_Template.xlsx";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+  }
+
+  var IMPORT_MAX = 500, IMPORT_MAX_ADMIN = 3000;
+
+  function normHeader(s) { return String(s || "").toLowerCase().replace(/[*:]/g, "").replace(/\s+/g, " ").trim(); }
+  function normText(s) { return String(s === null || s === undefined ? "" : s).replace(/\r\n?/g, "\n").trim(); }
+
+  /* Excel serial number, a Date, or text such as 14/10/2026, 14-10-2026,
+     2026-10-14 or "14 Oct 2026" -> {y, m, d}. Day comes first, as in Egypt. */
+  function parseSheetDate(v) {
+    if (v === null || v === undefined || v === "") { return null; }
+    if (typeof v === "number" && global.XLSX) {
+      var p = global.XLSX.SSF.parse_date_code(v);
+      return p ? { y: p.y, m: p.m, d: p.d } : null;
+    }
+    if (v instanceof Date && !isNaN(v)) { return { y: v.getFullYear(), m: v.getMonth() + 1, d: v.getDate() }; }
+    var s = String(v).trim(), m;
+    if ((m = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/.exec(s))) { return okDate(+m[1], +m[2], +m[3]); }
+    if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/.exec(s))) {
+      var y = +m[3]; if (y < 100) { y += 2000; }
+      return okDate(y, +m[2], +m[1]);
+    }
+    var t2 = Date.parse(s);
+    if (!isNaN(t2)) { var d = new Date(t2); return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() }; }
+    return null;
+  }
+  function okDate(y, m, d) {
+    if (m < 1 || m > 12 || d < 1 || d > 31) { return null; }
+    var dt = new Date(y, m - 1, d);
+    return dt.getMonth() === m - 1 ? { y: y, m: m, d: d } : null;
+  }
+  function ymdIso(p) { return new Date(p.y, p.m - 1, p.d, 12, 0, 0).toISOString(); }
+  function ymdDay(p) { return p.y + "-" + String(p.m).padStart(2, "0") + "-" + String(p.d).padStart(2, "0"); }
+
+  function splitList(v) {
+    return normText(v).split(/[,;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+
+  /* Full name, or any part of it ("Walid", "Sayed Hamed") when only one
+     person matches. Active staff win over people who have left. */
+  function personCandidates(name) {
+    var n = global.Util.normalize(name);
+    if (!n) { return []; }
+    var list = S.users();
+    var exact = list.filter(function (u) { return global.Util.normalize(u.name) === n; });
+    if (exact.length) { return exact.slice(0, 1); }
+    var partial = list.filter(function (u) {
+      var un = global.Util.normalize(u.name);
+      return un.indexOf(n) === 0 || (" " + un + " ").indexOf(" " + n + " ") >= 0;
+    });
+    var act = partial.filter(function (u) { return u.active !== false; });
+    return act.length ? act : partial;
+  }
+  function whoIs(raw, many) {
+    var n = global.Util.normalize(raw);
+    var first = function (x) { return global.Util.normalize(x.name).indexOf(n) === 0 ? 0 : 1; };
+    many = many.slice().sort(function (a, b) { return first(a) - first(b) || a.name.localeCompare(b.name); });
+    var names = many.slice(0, 4).map(function (x) { return x.name; });
+    if (many.length > 4) { names.push("+" + (many.length - 4)); }
+    return t("imp.whoIs", { v: raw, list: names.join(", ") });
+  }
+  function matchPerson(name) {
+    var c = personCandidates(name);
+    return c.length === 1 ? c[0] : null;
+  }
+
+  /* Same author + same day + same title = the same handover. The author is
+     their staff id, or their written name for former colleagues. */
+  function authorKey(p) { return p && p.id ? "id:" + p.id : "name:" + global.Util.normalize(p && p.name); }
+  function dupKey(author, day, title) { return authorKey(author) + "|" + day + "|" + global.Util.normalize(title); }
+
+  /* Reads the workbook and checks every row; nothing is saved here.
+     admin = the bulk template, with a "Written by" column per row. */
+  function analyseWorkbook(wb, existing, admin) {
+    var me = global.App.user();
+    var name = wb.SheetNames.filter(function (n) { return /^handovers?$/i.test(n); })[0] ||
+               wb.SheetNames.filter(function (n) { return !/^(how to fill|lists)$/i.test(n); })[0];
+    var rows = global.XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: "" });
+    var hIdx = -1;
+    for (var i = 0; i < Math.min(rows.length, 10); i++) {
+      if (rows[i].some(function (c) { return normHeader(c) === "title"; })) { hIdx = i; break; }
+    }
+    var noHeader = admin ? t("imp.noHeaderAdmin") : t("imp.noHeader");
+    if (hIdx < 0) { return { error: noHeader }; }
+    var col = {};
+    rows[hIdx].forEach(function (c, j) {
+      var h = normHeader(c);
+      if (h === "date") { col.date = j; }
+      else if (h === "written by" || h === "author" || h === "by" || h === "engineer") { col.by = j; }
+      else if (h === "title") { col.title = j; }
+      else if (h === "description") { col.desc = j; }
+      else if (h === "area") { col.area = j; }
+      else if (h === "status") { col.status = j; }
+      else if (h === "equipment tags" || h === "tags" || h === "tag") { col.tags = j; }
+      else if (h === "worked with" || h === "team" || /^worked with \d+$/.test(h)) { (col.team = col.team || []).push(j); }
+      else if (h === "due date" || h === "due") { col.due = j; }
+    });
+    if (col.date === undefined || col.desc === undefined || (admin && col.by === undefined)) { return { error: noHeader }; }
+
+    var areas = S.structure().areas || [];
+    var seen = {};
+    (existing || []).forEach(function (h) {
+      if (!h.createdBy || !h.createdAt) { return; }
+      if (!admin && !(me && h.createdBy.id === me.id)) { return; }
+      seen[dupKey(h.createdBy, global.Fmt.isoDay(h.createdAt), h.title)] = true;
+    });
+    var out = [];
+    for (var r = hIdx + 1; r < rows.length; r++) {
+      var row = rows[r];
+      var get = function (k) {
+        if (col[k] === undefined) { return ""; }
+        if (Array.isArray(col[k])) { return col[k].map(function (j) { return normText(row[j]); }).filter(Boolean).join(", "); }
+        return row[col[k]];
+      };
+      if (!row.some(function (c) { return normText(c) !== ""; })) { continue; }
+      var it = { line: r + 1, errors: [], warnings: [], tags: [], newTags: [], team: [] };
+      var d = parseSheetDate(get("date"));
+      if (!normText(get("date"))) { it.errors.push(t("imp.eDate")); }
+      else if (!d) { it.errors.push(t("imp.eDateBad", { v: normText(get("date")) })); }
+      else {
+        it.date = d;
+        if (new Date(d.y, d.m - 1, d.d) > new Date()) { it.warnings.push(t("imp.wFuture")); }
+      }
+
+      if (admin) {
+        var byTxt = normText(get("by"));
+        if (!byTxt) { it.errors.push(t("imp.eBy")); }
+        else {
+          var u0 = matchPerson(byTxt);
+          var many = u0 ? [] : personCandidates(byTxt);
+          if (many.length > 1) {
+            it.errors.push(t("imp.eByAmbig", { v: whoIs(byTxt, many) }));
+          } else if (u0) { it.author = { id: u0.id, name: u0.name, role: u0.role || "" }; }
+          else { it.author = { id: null, name: byTxt, role: "" }; it.warnings.push(t("imp.wBy", { v: byTxt })); }
+          if (it.author && it.author.role === "manager") { it.restricted = true; it.warnings.push(t("imp.wMgr")); }
+        }
+      } else if (me) {
+        it.author = { id: me.id, name: me.name, role: me.role || "" };
+        it.restricted = me.role === "manager";
+      }
+
+      it.title = normText(get("title"));
+      it.desc = normText(get("desc"));
+      if (!it.title) { it.errors.push(t("imp.eTitle")); }
+      if (it.title.length > 160) { it.title = it.title.slice(0, 160); it.warnings.push(t("imp.wTitleLong")); }
+      if (!it.desc) { it.errors.push(t("imp.eDesc")); }
+
+      var st = global.Util.normalize(get("status"));
+      if (!st || st === "info") { it.status = "info"; }
+      else if (/fol+o?w/.test(st)) { it.status = S.FOLLOWUP; }
+      else if (st === "draft") { it.status = "draft"; }
+      else { it.errors.push(t("imp.eStatus", { v: normText(get("status")) })); }
+
+      var areaTxt = normText(get("area"));
+      if (areaTxt) {
+        var hit = areas.filter(function (a) {
+          return a.id.toLowerCase() === areaTxt.toLowerCase() || String(a.en || "").toLowerCase() === areaTxt.toLowerCase();
+        })[0];
+        if (hit) { it.area = hit.id; }
+        else { it.area = areaTxt.toUpperCase(); it.newArea = true; it.warnings.push(t("imp.wArea", { v: it.area })); }
+      } else { it.area = ""; }
+
+      splitList(get("tags")).forEach(function (raw) {
+        var no = raw.toUpperCase().replace(/\s+/g, "");
+        var tg = S.tagByNumber(no);
+        if (tg) { if (it.tags.indexOf(tg.tagNo) < 0) { it.tags.push(tg.tagNo); } }
+        else if (it.tags.indexOf(no) < 0) { it.tags.push(no); it.newTags.push(no); }
+      });
+      if (it.newTags.length) { it.warnings.push(t("imp.wTags", { v: it.newTags.join(", ") })); }
+
+      var unknown = [];
+      var ambiguous = [];
+      splitList(get("team")).forEach(function (raw) {
+        var u = matchPerson(raw);
+        if (u && it.author && u.id === it.author.id) { return; }
+        if (!u && it.author && global.Util.normalize(raw) === global.Util.normalize(it.author.name)) { return; }
+        if (u) {
+          if (!it.team.some(function (m) { return m.id === u.id; })) {
+            it.team.push({ id: u.id, name: u.name, role: u.role || "technician", jobTitle: u.jobTitle || "" });
+          }
+        } else if (personCandidates(raw).length > 1) {
+          ambiguous.push(whoIs(raw, personCandidates(raw)));
+        } else { unknown.push(raw); it.team.push({ id: null, name: raw }); }
+      });
+      if (unknown.length) { it.warnings.push(t("imp.wTeam", { v: unknown.join(", ") })); }
+      if (ambiguous.length) { it.warnings.push(t("imp.wTeamAmbig", { v: ambiguous.join("; ") })); }
+
+      var dueTxt = normText(get("due"));
+      if (dueTxt) {
+        var dd = parseSheetDate(get("due"));
+        if (dd) { it.due = ymdDay(dd); } else { it.warnings.push(t("imp.wDue", { v: dueTxt })); }
+      }
+
+      if (it.date && it.title && it.author) {
+        var key = dupKey(it.author, ymdDay(it.date), it.title);
+        if (seen[key]) { it.skip = true; it.warnings.push(admin ? t("imp.wDupAdmin") : t("imp.wDup")); }
+        seen[key] = true;
+      }
+      it.ok = !it.errors.length && !it.skip;
+      out.push(it);
+    }
+    var max = admin ? IMPORT_MAX_ADMIN : IMPORT_MAX;
+    if (out.length > max) { return { error: t("imp.tooMany", { n: global.Fmt.num(max) }) }; }
+    return { sheet: name, items: out };
+  }
+
+  /* A file dropped anywhere on the import page is imported; on other pages
+     a stray drop must not make the browser leave the app to open the file. */
+  var importDropTarget = null, pageDropInstalled = false;
+  function installPageDrop() {
+    if (pageDropInstalled) { return; }
+    pageDropInstalled = true;
+    var hasFiles = function (e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0; };
+    document.addEventListener("dragover", function (e) {
+      if (!hasFiles(e) || e.defaultPrevented) { return; }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = $("#imp-drop") ? "copy" : "none";
+    });
+    document.addEventListener("drop", function (e) {
+      if (!hasFiles(e) || e.defaultPrevented) { return; }
+      e.preventDefault();
+      if ($("#imp-drop") && importDropTarget) { importDropTarget(e.dataTransfer.files); }
+    });
+  }
+
+  async function handoverImport(query) {
+    var me = global.App.user();
+    var admin = !!(query && query.mode === "admin");
+    if (!global.XLSX) { view().innerHTML = emptyBlock(t("imp.noReader")); return; }
+    if (admin && !adminUnlocked) {
+      view().innerHTML = emptyBlock(t("imp.adminLocked")) +
+        '<div style="text-align:center"><button class="btn primary" id="imp-unlock">' + esc(t("nav.admin")) + "</button></div>";
+      $("#imp-unlock").addEventListener("click", function () { go("#/admin"); });
+      return;
+    }
+    view().innerHTML =
+      '<div class="page-head"><div><h1>' + esc(t(admin ? "imp.adminTitle" : "imp.title")) + "</h1><p>" +
+        esc(t(admin ? "imp.adminSub" : "imp.sub")) + "</p></div>" +
+        '<div class="spacer"></div><button class="btn ghost" id="imp-back">' + esc(t("common.back")) + "</button></div>" +
+      '<div class="grid two">' +
+        '<div class="card"><h3>' + esc(t("imp.step1")) + "</h3>" +
+          '<p class="small faint">' + esc(t(admin ? "imp.adminStep1Desc" : "imp.step1Desc")) + "</p>" +
+          '<button class="btn" id="imp-tpl">' + esc(t(admin ? "imp.adminDownload" : "imp.download")) + "</button></div>" +
+        '<div class="card"><h3>' + esc(t("imp.step2")) + "</h3>" +
+          '<p class="small faint">' + esc(admin ? t("imp.adminStep2Desc") : (S.viewerIsManager() ? t("imp.step2DescMgr") : t("imp.step2Desc"))) + "</p>" +
+          '<div class="dropzone imp-drop" id="imp-drop">' +
+            '<div class="imp-drop-icon" aria-hidden="true">&#8681;</div>' +
+            '<div class="imp-drop-text">' + esc(t("imp.dropHere")) + "</div>" +
+            '<div class="small faint" style="margin:6px 0 10px">' + esc(t("imp.or")) + "</div>" +
+            '<button class="btn primary" id="imp-pick" type="button">' + esc(t("imp.choose")) + "</button>" +
+          "</div>" +
+          '<input type="file" id="imp-file" accept=".xlsx,.xls,.xlsm,.csv" class="hidden"></div>' +
+      "</div>" +
+      '<div id="imp-result" style="margin-top:16px"></div>';
+
+    $("#imp-back").addEventListener("click", function () { go(admin ? "#/admin" : "#/handovers"); });
+    $("#imp-tpl").addEventListener("click", function () { downloadTemplate(admin); });
+    $("#imp-pick").addEventListener("click", function (e) { e.stopPropagation(); $("#imp-file").click(); });
+    $("#imp-file").addEventListener("change", function (e) {
+      var file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (file) { handleFile(file); }
+    });
+
+    // Drag and drop: onto the box, or anywhere on this page.
+    var zone = $("#imp-drop"), depth = 0;
+    zone.addEventListener("click", function () { $("#imp-file").click(); });
+    zone.addEventListener("dragenter", function (e) { e.preventDefault(); depth++; zone.classList.add("over"); });
+    zone.addEventListener("dragleave", function () { if (--depth <= 0) { depth = 0; zone.classList.remove("over"); } });
+    zone.addEventListener("dragover", function (e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      depth = 0; zone.classList.remove("over");
+      droppedFiles(e.dataTransfer && e.dataTransfer.files);
+    });
+    importDropTarget = droppedFiles;
+    installPageDrop();
+
+    function droppedFiles(files) {
+      if (!files || !files.length) { return; }
+      if (files.length > 1) { global.UI.toast(t("imp.dropOne"), "err"); return; }
+      if (!/\.(xlsx|xlsm|xls|csv)$/i.test(files[0].name)) { global.UI.toast(t("imp.dropType", { v: files[0].name }), "err"); return; }
+      handleFile(files[0]);
+    }
+
+    async function handleFile(file) {
+      var res;
+      global.UI.busy(true, t("common.loading"));
+      try {
+        var wb = global.XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: "array", cellDates: false });
+        res = analyseWorkbook(wb, admin ? await S.allHeaders() : await S.listHandovers(), admin);
+      } catch (err) {
+        S.log("excel import: could not read", err && err.message);
+        res = { error: t("imp.badFile") };
+      }
+      global.UI.busy(false);
+      showPreview(file.name, res);
+    }
+
+    function showPreview(fileName, res) {
+      var box = $("#imp-result");
+      if (res.error) { box.innerHTML = '<div class="card"><p class="err-msg">' + esc(res.error) + "</p></div>"; return; }
+      var items = res.items;
+      var ready = items.filter(function (x) { return x.ok; });
+      var skipped = items.length - ready.length;
+      var warned = ready.filter(function (x) { return x.warnings.length; }).length;
+      var authors = {};
+      ready.forEach(function (x) { authors[authorKey(x.author)] = true; });
+      box.innerHTML =
+        '<div class="card">' +
+          '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+            "<div><h3 style=\"margin:0\">" + esc(t("imp.preview", { file: fileName })) + "</h3>" +
+            '<p class="small faint" style="margin:4px 0 0">' +
+              esc(t("imp.summary", { ok: global.Fmt.num(ready.length), warn: global.Fmt.num(warned), skip: global.Fmt.num(skipped) })) +
+              (admin ? " · " + esc(t("imp.authors", { n: global.Fmt.num(Object.keys(authors).length) })) : "") + "</p></div>" +
+            '<div class="spacer" style="flex:1"></div>' +
+            '<button class="btn primary" id="imp-go"' + (ready.length ? "" : " disabled") + ">" +
+              esc(t("imp.go", { n: global.Fmt.num(ready.length) })) + "</button>" +
+          "</div>" +
+          '<div style="overflow:auto;margin-top:12px"><table class="table imp-table"><thead><tr>' +
+            "<th>" + esc(t("imp.row")) + "</th><th>" + esc(t("imp.date")) + "</th>" +
+            (admin ? "<th>" + esc(t("imp.byCol")) + "</th>" : "") +
+            "<th>" + esc(t("ho.title")) + "</th>" +
+            "<th>" + esc(t("ho.area")) + "</th><th>" + esc(t("ho.status")) + "</th><th>" + esc(t("ho.tags")) + "</th>" +
+            "<th>" + esc(t("ho.team")) + "</th><th>" + esc(t("imp.notes")) + "</th>" +
+          "</tr></thead><tbody>" +
+          items.map(function (x) {
+            var cls = x.errors.length || x.skip ? "imp-bad" : (x.warnings.length ? "imp-warn" : "imp-ok");
+            return '<tr class="' + cls + '"><td>' + x.line + "</td>" +
+              "<td>" + esc(x.date ? global.Fmt.date(ymdIso(x.date)) : "—") + "</td>" +
+              (admin ? "<td>" + esc(x.author ? x.author.name : "—") + (x.restricted ? " " + restrictedBadge() : "") + "</td>" : "") +
+              "<td>" + esc(x.title || "—") + "</td>" +
+              "<td>" + esc(x.area || "—") + "</td>" +
+              "<td>" + (x.status ? statusBadge(x.status) : "—") + "</td>" +
+              "<td>" + esc(x.tags.join(", ") || "—") + "</td>" +
+              "<td>" + esc(x.team.map(function (m) { return m.name; }).join(", ") || "—") + "</td>" +
+              "<td>" + x.errors.map(function (m) { return '<div class="imp-e">' + esc(m) + "</div>"; }).join("") +
+                       x.warnings.map(function (m) { return '<div class="imp-w">' + esc(m) + "</div>"; }).join("") +
+                       (!x.errors.length && !x.warnings.length ? '<span class="faint">' + esc(t("imp.okRow")) + "</span>" : "") + "</td></tr>";
+          }).join("") +
+          "</tbody></table></div></div>";
+      if (ready.length) { $("#imp-go").addEventListener("click", function () { runImport(ready, Object.keys(authors).length); }); }
+    }
+
+    async function runImport(ready, authorCount) {
+      var msg = admin ? t("imp.adminConfirm", { n: global.Fmt.num(ready.length), p: global.Fmt.num(authorCount) })
+                      : t("imp.confirm", { n: global.Fmt.num(ready.length) });
+      var ok = await global.UI.confirm(msg, { okLabel: t("imp.go", { n: global.Fmt.num(ready.length) }) });
+      if (!ok) { return; }
+      global.UI.busy(true, t("common.saving"));
+      try {
+        var newAreas = {}, newTags = {};
+        ready.forEach(function (x) {
+          if (x.newArea && x.area) { newAreas[x.area] = { id: x.area, en: x.area }; }
+          x.newTags.forEach(function (no) { newTags[no] = { tagNo: no, type: "OT", area: x.area || "", descEn: t("imp.tagDesc") }; });
+        });
+        if (Object.keys(newAreas).length) { await S.addAreas(Object.keys(newAreas).map(function (k) { return newAreas[k]; })); }
+        if (Object.keys(newTags).length) { await S.importTags(Object.keys(newTags).map(function (k) { return newTags[k]; })); }
+        var now = new Date().toISOString();
+        var recs = ready.map(function (x) {
+          var at = ymdIso(x.date);
+          var rec = {
+            id: global.Util.uuid(), version: 0,
+            title: x.title, description: x.desc,
+            plant: "", area: x.area || "", unit: "", shift: "",
+            tags: x.tags, team: x.team,
+            status: x.status, kind: x.status === "draft" ? "info" : x.status,
+            dueDate: x.due || null,
+            createdBy: x.author.id ? { id: x.author.id, name: x.author.name } : { id: null, name: x.author.name },
+            createdAt: at, updatedAt: at,
+            history: [{ status: x.status, by: x.author.name, byId: x.author.id, at: at }],
+            comments: [], attachments: [],
+            importedFrom: "excel", importedAt: now,
+            importedBy: me ? { id: me.id, name: me.name } : null
+          };
+          if (x.restricted) { rec.restricted = "managers"; }
+          return rec;
+        });
+        await S.addHandovers(recs, function (i, n) {
+          var lab = document.getElementById("busy-label");
+          if (lab) { lab.textContent = t("imp.progress", { i: global.Fmt.num(i), n: global.Fmt.num(n) }); }
+        });
+        // One notice for everyone, one for managers about manager-only rows.
+        var open = recs.filter(function (r) { return !r.restricted; }).length;
+        var closed = recs.length - open;
+        var actor = { id: me.id, name: me.name };
+        try {
+          if (open) { await S.addNotification({ type: "import", actor: actor, handoverId: "", count: open, title: t("imp.notifTitle", { n: open }) }); }
+          if (closed) { await S.addNotification({ type: "import", actor: actor, handoverId: "", count: closed, title: t("imp.notifTitle", { n: closed }), restricted: "managers" }); }
+        } catch (e) { /* the import itself succeeded */ }
+        global.UI.busy(false);
+        global.UI.toast(t("imp.done", { n: global.Fmt.num(recs.length) }), "ok");
+        listFilters = { q: "", status: "", area: "", from: "", to: "", creator: admin ? "" : me.id, worked: "", tag: "", src: "", mine: false };
+        go("#/handovers");
+      } catch (err) {
+        global.UI.busy(false);
+        S.log("excel import failed", err && (err.name + ": " + err.message));
+        global.UI.toast(t("err.write"), "err");
+      }
+    }
+  }
+
   global.Views = {
     dashboard: dashboard,
     handoverList: handoverList,
     handoverForm: handoverForm,
     handoverDetail: handoverDetail,
+    handoverImport: handoverImport,
     equipmentList: equipmentList,
     equipmentDetail: equipmentDetail,
     notifications: notifications,

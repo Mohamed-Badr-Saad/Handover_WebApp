@@ -309,6 +309,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stat .n { font-size: 1.85rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat .l { color: var(--text-soft); font-size: .84rem; margin-top: 3px; }
 .stat.alert .n { color: var(--danger); }
+.stat.attn { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.stat.attn .n { color: var(--accent); }
+.badge.s-unseen { background: var(--accent); color: #fff; }
+.badge.s-restricted { background: rgba(147, 51, 234, .14); color: #7e22ce; }
+.imp-table td { vertical-align: top; font-size: .86rem; }
+.imp-table tr.imp-bad td { background: var(--danger-soft); }
+.imp-table tr.imp-warn td { background: rgba(245, 158, 11, .12); }
+.imp-e { color: var(--danger); font-weight: 600; }
+.imp-w { color: #9a5b00; }
 
 .empty {
   text-align: center; padding: 42px 20px;
@@ -497,6 +506,11 @@ textarea.input { min-height: 110px; resize: vertical; line-height: 1.55; }
   cursor: pointer; font-size: .88rem;
 }
 .dropzone:hover, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.imp-drop { padding: 22px 16px 18px; margin-top: 4px; transition: background .15s, border-color .15s; }
+.imp-drop-icon { font-size: 1.9rem; line-height: 1; margin-bottom: 6px; color: var(--accent); }
+.imp-drop-text { font-weight: 600; color: var(--text); }
+.imp-drop.over .imp-drop-text { color: var(--accent); }
+.imp-drop.over { border-style: solid; }
 
 /* ============================ DROPDOWN ============================ */
 

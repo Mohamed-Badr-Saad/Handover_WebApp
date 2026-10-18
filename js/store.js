@@ -583,7 +583,18 @@
   /* Only engineers (and anyone given the administrator role) sign in.
      Supervisors and technicians stay on the roster so engineers can list
      them under "Worked with", but they have no account and no password. */
-  var ACCOUNT_ROLES = ["engineer", "administrator"];
+  var ACCOUNT_ROLES = ["engineer", "manager", "administrator"];
+
+  /* Handovers written by a manager carry restricted:"managers". Only people
+     signed in with the manager role see them - in lists, search, counts,
+     tag history, notifications and exports. Hidden by the app only: the
+     files sit in the same shared folder as everything else. */
+  function viewerIsManager() {
+    var me = global.App && global.App.user ? global.App.user() : null;
+    return !!(me && me.role === "manager");
+  }
+  function canView(h) { return !h || !h.restricted || viewerIsManager(); }
+  function visibleOnly(list) { return viewerIsManager() ? list : list.filter(canView); }
   function canSignIn(u) { return !!u && u.active !== false && ACCOUNT_ROLES.indexOf(u.role || "") >= 0; }
 
   function userById(id) {
@@ -610,6 +621,8 @@
       plant: h.plant, area: h.area, unit: h.unit, shift: h.shift,
       tags: h.tags || [],
       teamIds: (h.team || []).map(function (m) { return m && m.id; }).filter(Boolean),
+      restricted: h.restricted || undefined,
+      importedFrom: h.importedFrom || undefined,
       hv: 2,
       createdBy: h.createdBy, createdAt: h.createdAt, updatedAt: h.updatedAt,
       dueDate: h.dueDate || null,
@@ -621,6 +634,41 @@
       location: h.location || undefined,
       dateUnknown: h.dateUnknown ? true : undefined
     };
+  }
+
+  /* Saves many new handovers at once (Excel import). Each record is still its
+     own file; the month index files are written once per month at the end
+     instead of once per record. Dates come from the sheet, so updatedAt is
+     left equal to createdAt and old entries slot in where they belong. */
+  async function addHandovers(list, onProgress) {
+    var byMonth = {};
+    for (var i = 0; i < list.length; i++) {
+      var rec = list[i];
+      rec.version = 1;
+      await writeJson(["data", "handovers", rec.id + ".json"], rec);
+      var key = shardKey(rec.createdAt);
+      (byMonth[key] = byMonth[key] || []).push(headerOf(rec));
+      if (onProgress) { onProgress(i + 1, list.length); }
+    }
+    var months = Object.keys(byMonth);
+    for (var m = 0; m < months.length; m++) {
+      var path = ["data", "index", months[m] + ".json"];
+      try {
+        var shard = await readJson(path, null) || { month: months[m], items: {} };
+        byMonth[months[m]].forEach(function (h) { shard.items[h.id] = h; });
+        shard.updatedAt = new Date().toISOString();
+        await writeJson(path, shard);
+      } catch (e) { /* the index heals itself from the record files */ }
+    }
+    invalidate();
+    return list.length;
+  }
+
+  /* Every header, including managers-only ones the viewer cannot see. Used
+     only to recognise duplicates during a bulk import; never displayed. */
+  async function allHeaders() {
+    await listHandovers();
+    return (cache.headers || []).slice();
   }
 
   /* Newest first; records with no date at all go to the bottom. */
@@ -664,7 +712,7 @@
 
   /* Returns every handover header, healing the index from record files. */
   async function listHandovers(force) {
-    if (cache.headers && !force) { return cache.headers; }
+    if (cache.headers && !force) { return visibleOnly(cache.headers); }
     var gone = await readDeleted();
     var indexed = await readShards();
     var files = await listNames(["data", "handovers"]);
@@ -701,7 +749,7 @@
     result.forEach(fixStatus);
     result.sort(byNewest);
     cache.headers = result;
-    return result;
+    return visibleOnly(result);
   }
 
   function invalidate() { cache.headers = null; }
@@ -734,6 +782,7 @@
   async function getHandover(id) {
     if (deletedIds[id]) { return null; }
     var rec = await readJson(["data", "handovers", id + ".json"], null);
+    if (rec && !canView(rec)) { return null; }
     if (rec || !isArchiveId(id)) { return fixStatus(rec); }
     var arc = await loadArchive();
     var hit = arc.records[id];
@@ -1015,7 +1064,9 @@
   /* Newest deletion first, without the stored record bodies. */
   async function listDeleted() {
     var map = await readDeleted();
-    return Object.keys(map).map(function (id) {
+    return Object.keys(map).filter(function (id) {
+      return canView(map[id].record);
+    }).map(function (id) {
       var d = map[id];
       return { id: id, title: d.title, createdBy: d.createdBy, createdAt: d.createdAt,
                archived: d.archived, deletedAt: d.deletedAt, deletedBy: d.deletedBy };
@@ -1106,6 +1157,12 @@
 
   async function addNotification(n) {
     n.id = n.id || global.Util.uuid();
+    if (n.restricted === undefined && n.handoverId && cache.headers) {
+      var hdr = null;
+      for (var k = 0; k < cache.headers.length; k++) { if (cache.headers[k].id === n.handoverId) { hdr = cache.headers[k]; break; } }
+      if (hdr && hdr.restricted) { n.restricted = hdr.restricted; }
+    }
+    if (!n.restricted) { delete n.restricted; }
     n.at = n.at || new Date().toISOString();
     // Short suffix keeps the full Windows path clear of the 260-character limit.
     await writeJson(["data", "notifications", tsName() + "_" + n.id.slice(0, 8) + ".json"], n);
@@ -1119,7 +1176,7 @@
     var out = [];
     for (var i = names.length - 1; i >= 0; i--) {
       var n = await readJson(["data", "notifications", names[i]], null);
-      if (n) { out.push(n); }
+      if (n && canView(n)) { out.push(n); }
     }
     return out;
   }
@@ -1354,6 +1411,7 @@
     appendAttachments: appendAttachments, setStatus: setStatus,
     saveHandoverChecked: saveHandoverChecked, deleteHandover: deleteHandover,
     listDeleted: listDeleted, restoreHandover: restoreHandover,
+    addHandovers: addHandovers, allHeaders: allHeaders, canView: canView, viewerIsManager: viewerIsManager,
     importArchive: importArchive, loadArchive: loadArchive, archiveInfo: archiveInfo,
     isArchiveId: isArchiveId, searchText: searchText, archivedRecord: archivedRecord,
 
