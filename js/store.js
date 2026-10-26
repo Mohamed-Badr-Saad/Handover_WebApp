@@ -594,7 +594,21 @@
     return !!(me && me.role === "manager");
   }
   function canView(h) { return !h || !h.restricted || viewerIsManager(); }
-  function visibleOnly(list) { return viewerIsManager() ? list : list.filter(canView); }
+
+  /* Two databases share the folder: the engineers' handovers and the
+     managers' (restricted:"managers"). A manager works in one of them at a
+     time - the view chosen after sign-in - and every list, count, search,
+     tag history and notification follows that view. Everyone else only ever
+     sees the engineers' database. Opening a handover directly (a link) still
+     works for managers in either view. */
+  var currentView = "engineers";
+  function setView(v) { currentView = v === "managers" ? "managers" : "engineers"; }
+  function getView() { return viewerIsManager() ? currentView : "engineers"; }
+  function inScope(h) {
+    if (!h) { return true; }
+    return getView() === "managers" ? !!h.restricted : !h.restricted;
+  }
+  function visibleOnly(list) { return list.filter(inScope); }
   function canSignIn(u) { return !!u && u.active !== false && ACCOUNT_ROLES.indexOf(u.role || "") >= 0; }
 
   function userById(id) {
@@ -627,6 +641,7 @@
       createdBy: h.createdBy, createdAt: h.createdAt, updatedAt: h.updatedAt,
       dueDate: h.dueDate || null,
       commentCount: (h.comments || []).length,
+      openActions: (h.actions || []).filter(function (a) { return a && a.status === "open"; }).length || undefined,
       attachmentCount: (h.attachments || []).length,
       snippet: String(h.description || "").slice(0, 220),
       archived: h.archived ? true : undefined,
@@ -786,7 +801,7 @@
     if (rec || !isArchiveId(id)) { return fixStatus(rec); }
     var arc = await loadArchive();
     var hit = arc.records[id];
-    return hit ? JSON.parse(JSON.stringify(hit)) : null;
+    return hit && canView(hit) ? JSON.parse(JSON.stringify(hit)) : null;
   }
 
   /* ---------------------------------------------------------------- Archive
@@ -795,18 +810,25 @@
      they are stored one file per year (data/archive/<year>.json) plus a
      manifest written last. The whole archive is read once per session. */
 
-  var ARCHIVE_DIR = ["data", "archive"];
+  /* One archive per database. The managers' archive lives in its own
+     folder and every record in it is managers-only, whatever the file says. */
+  var ARCHIVES = {
+    engineers: { dir: ["data", "archive"], prefix: "arc-" },
+    managers: { dir: ["data", "archive-managers"], prefix: "arcm-" }
+  };
+  var AUDIENCES = ["engineers", "managers"];
   var archive = null;
 
-  function isArchiveId(id) { return /^arc-/.test(String(id || "")); }
+  function isArchiveId(id) { return /^arcm?-/.test(String(id || "")); }
+  function audienceOfId(id) { return /^arcm-/.test(String(id || "")) ? "managers" : "engineers"; }
 
-  function inflate(r) {
+  function inflate(r, audience) {
     r.version = r.version || 1;
     r.archived = true;
     ["title", "description", "plant", "unit", "shift", "area", "location", "legacyStatus"].forEach(function (k) {
       if (r[k] === undefined || r[k] === null) { r[k] = ""; }
     });
-    ["tags", "team", "history", "comments", "attachments"].forEach(function (k) {
+    ["tags", "team", "history", "comments", "attachments", "actions"].forEach(function (k) {
       if (!Array.isArray(r[k])) { r[k] = []; }
     });
     r.status = normalizeStatus(r);
@@ -814,6 +836,7 @@
     r.createdAt = r.createdAt || null;
     r.updatedAt = r.updatedAt || r.createdAt || null;
     r.dueDate = r.dueDate || null;
+    if (audience === "managers") { r.restricted = "managers"; } else { delete r.restricted; }
     return r;
   }
 
@@ -826,7 +849,7 @@
       if (Array.isArray(v) && !v.length) { return; }
       if (k === "updatedAt" && v === r.createdAt) { return; }
       if (k === "status" && v === "closed") { return; }
-      if (k === "archived" || k === "version") { return; }
+      if (k === "archived" || k === "version" || k === "restricted") { return; }
       out[k] = v;
     });
     return out;
@@ -836,16 +859,19 @@
 
   async function loadArchive(force) {
     if (archive && !force) { return archive; }
-    var fresh = { manifest: null, records: {}, headers: [] };
-    var manifest = await readJson(ARCHIVE_DIR.concat(["manifest.json"]), null);
-    if (manifest && Array.isArray(manifest.buckets)) {
-      fresh.manifest = manifest;
+    var fresh = { manifests: {}, records: {}, headers: [] };
+    for (var a = 0; a < AUDIENCES.length; a++) {
+      var aud = AUDIENCES[a], dir = ARCHIVES[aud].dir;
+      var manifest = await readJson(dir.concat(["manifest.json"]), null);
+      if (!manifest || !Array.isArray(manifest.buckets)) { continue; }
+      fresh.manifests[aud] = manifest;
       for (var i = 0; i < manifest.buckets.length; i++) {
         var b = manifest.buckets[i];
-        var file = await readJson(ARCHIVE_DIR.concat([b + ".json"]), null);
-        if (!file || !Array.isArray(file.records)) { log("archive: bucket missing or unreadable", b); continue; }
+        var file = await readJson(dir.concat([b + ".json"]), null);
+        if (!file || !Array.isArray(file.records)) { log("archive: bucket missing or unreadable", aud + "/" + b); continue; }
         file.records.forEach(function (raw) {
-          var rec = inflate(raw);
+          if (!raw || audienceOfId(raw.id) !== aud) { return; }
+          var rec = inflate(raw, aud);
           fresh.records[rec.id] = rec;
           var hdr = headerOf(rec);
           hdr.fromArchive = true;
@@ -863,9 +889,12 @@
     return archive && archive.records[id] ? archive.records[id] : null;
   }
 
-  function archiveInfo() {
-    if (!archive || !archive.manifest) { return null; }
-    return { count: archive.headers.length, importedAt: archive.manifest.importedAt, by: archive.manifest.by };
+  function archiveInfo(audience) {
+    audience = audience || "engineers";
+    var m = archive && archive.manifests[audience];
+    if (!m) { return null; }
+    var n = archive.headers.filter(function (h) { return audienceOfId(h.id) === audience; }).length;
+    return { count: n, importedAt: m.importedAt, by: m.by, sources: m.sources || [] };
   }
 
   /* Full text used by search: for archive records the whole description, so
@@ -880,31 +909,41 @@
     return h._hay;
   }
 
-  /* Writes the bundle produced from the old Excel sheets. Year files first,
-     manifest last, so a half-finished import is never picked up. Running it
-     again simply overwrites with the same ids. */
-  async function importArchive(bundle, byName, onProgress) {
+  /* Writes an archive bundle (from the old Excel sheets) into ONE database's
+     archive, replacing what was there. Year files first, manifest last, so a
+     half-finished import is never picked up. A bundle made for the other
+     database is refused, so the two can never be mixed up. */
+  async function importArchive(bundle, byName, onProgress, audience) {
+    audience = audience === "managers" ? "managers" : "engineers";
     if (!bundle || bundle.kind !== "plant-handover-archive" || !Array.isArray(bundle.records)) {
       var bad = new Error("not-archive");
       bad.name = "FormatError";
       throw bad;
     }
+    if ((bundle.audience || "engineers") !== audience) {
+      var wrong = new Error("archive for " + (bundle.audience || "engineers"));
+      wrong.name = "AudienceError";
+      wrong.audience = bundle.audience || "engineers";
+      throw wrong;
+    }
+    var dir = ARCHIVES[audience].dir;
     var groups = {};
     bundle.records.forEach(function (r) {
-      if (!r || !isArchiveId(r.id)) { return; }
+      if (!r || !isArchiveId(r.id) || audienceOfId(r.id) !== audience) { return; }
       var key = bucketOf(r);
       (groups[key] = groups[key] || []).push(deflate(r));
     });
     var keys = Object.keys(groups).sort();
     for (var i = 0; i < keys.length; i++) {
       if (onProgress) { onProgress(i + 1, keys.length + 1, keys[i]); }
-      await writeJson(ARCHIVE_DIR.concat([keys[i] + ".json"]), { bucket: keys[i], records: groups[keys[i]] }, true);
+      await writeJson(dir.concat([keys[i] + ".json"]), { bucket: keys[i], records: groups[keys[i]] }, true);
     }
     var addedAreas = await addAreas(bundle.areas || []);
     if (onProgress) { onProgress(keys.length + 1, keys.length + 1, "manifest"); }
     var count = keys.reduce(function (n, k) { return n + groups[k].length; }, 0);
-    await writeJson(ARCHIVE_DIR.concat(["manifest.json"]), {
+    await writeJson(dir.concat(["manifest.json"]), {
       kind: "plant-handover-archive-manifest",
+      audience: audience,
       importedAt: new Date().toISOString(),
       by: byName || "",
       sources: bundle.sources || [],
@@ -974,11 +1013,34 @@
     return new Promise(function (r) { setTimeout(r, ms); });
   }
 
+  /* A comment can report that an action required has been done: the same
+     save adds the comment and closes the action, so the two never disagree. */
   function appendComment(id, comment) {
     return updateHandover(id,
-      function (rec) { rec.comments = (rec.comments || []).concat([comment]); },
+      function (rec) {
+        rec.comments = (rec.comments || []).concat([comment]);
+        if (comment.actionId) {
+          (rec.actions || []).forEach(function (a) {
+            if (a.id === comment.actionId && a.status !== "done") {
+              a.status = "done";
+              a.doneBy = comment.by;
+              a.doneAt = comment.at;
+              a.doneComment = comment.id;
+            }
+          });
+        }
+      },
       function (rec) {
         return (rec.comments || []).some(function (c) { return c.id === comment.id; });
+      });
+  }
+
+  /* Anyone who can see a handover may add an action required to it. */
+  function addAction(id, action) {
+    return updateHandover(id,
+      function (rec) { rec.actions = (rec.actions || []).concat([action]); },
+      function (rec) {
+        return (rec.actions || []).some(function (a) { return a.id === action.id; });
       });
   }
 
@@ -1169,14 +1231,14 @@
     return n;
   }
 
-  async function listNotifications(limit) {
+  async function listNotifications(limit, everything) {
     var names = await listNames(["data", "notifications"]);
     names = names.filter(function (n) { return /\.json$/.test(n) && !/\.tmp$/.test(n); }).sort();
     if (limit && names.length > limit) { names = names.slice(names.length - limit); }
     var out = [];
     for (var i = names.length - 1; i >= 0; i--) {
       var n = await readJson(["data", "notifications", names[i]], null);
-      if (n && canView(n)) { out.push(n); }
+      if (n && (everything ? canView(n) : inScope(n))) { out.push(n); }
     }
     return out;
   }
@@ -1191,7 +1253,7 @@
       users: users(),
       tags: tags(),
       handovers: [],
-      notifications: await listNotifications(500)
+      notifications: await listNotifications(500, true)
     };
     var files = await listNames(["data", "handovers"]);
     for (var i = 0; i < files.length; i++) {
@@ -1407,11 +1469,12 @@
 
     listHandovers: listHandovers, invalidate: invalidate, rebuildIndex: rebuildIndex,
     getHandover: getHandover, saveHandover: saveHandover,
-    updateHandover: updateHandover, appendComment: appendComment,
+    updateHandover: updateHandover, appendComment: appendComment, addAction: addAction,
     appendAttachments: appendAttachments, setStatus: setStatus,
     saveHandoverChecked: saveHandoverChecked, deleteHandover: deleteHandover,
     listDeleted: listDeleted, restoreHandover: restoreHandover,
     addHandovers: addHandovers, allHeaders: allHeaders, canView: canView, viewerIsManager: viewerIsManager,
+    setView: setView, getView: getView, inScope: inScope, audienceOfId: audienceOfId,
     importArchive: importArchive, loadArchive: loadArchive, archiveInfo: archiveInfo,
     isArchiveId: isArchiveId, searchText: searchText, archivedRecord: archivedRecord,
 

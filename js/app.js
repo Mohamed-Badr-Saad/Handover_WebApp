@@ -287,8 +287,89 @@
     state.user = S.userById(user.id) || user;
     global.Prefs.set("userId", user.id);
     global.Session.set("auth." + user.id, true);
+    global.Session.remove("view." + user.id);
     S.log("signin", "signed in as " + user.name);
-    enterApp();
+    startView();
+  }
+
+  /* ============================ MANAGER VIEWS ==============================
+     Managers work in one database at a time: the managers' handovers or the
+     engineers'. They choose right after signing in and can switch at any
+     time from the top bar. Everyone else goes straight to the engineers'. */
+
+  function isManager() { return !!(state.user && state.user.role === "manager"); }
+
+  function startView() {
+    if (!isManager()) { S.setView("engineers"); paintViewSwitch(); enterApp(); return; }
+    var chosen = global.Session.get("view." + state.user.id, null);
+    if (chosen) { S.setView(chosen); paintViewSwitch(); enterApp(); return; }
+    gateChooseView();
+  }
+
+  function viewCard(v, last) {
+    return '<button type="button" class="view-card v-' + v + (last === v ? " last" : "") + '" data-view="' + v + '">' +
+      '<span class="view-card-title">' + esc(t("view." + v)) + "</span>" +
+      '<span class="view-card-desc">' + esc(t("view." + v + "Desc")) + "</span>" +
+      '<span class="view-card-count" id="vc-' + v + '">&nbsp;</span>' +
+      (last === v ? '<span class="view-card-last">' + esc(t("view.last")) + "</span>" : "") +
+      "</button>";
+  }
+
+  function gateChooseView() {
+    var last = global.Prefs.get("view." + state.user.id, "");
+    showGate(t("view.title"),
+      '<div class="gate-step"><p>' + esc(t("view.desc", { name: global.Views.personName(state.user) })) + "</p>" +
+        '<div class="view-cards">' + viewCard("managers", last) + viewCard("engineers", last) + "</div>" +
+        '<p class="small faint" style="margin-top:12px">' + esc(t("view.hint")) + "</p></div>");
+    Array.prototype.forEach.call(document.querySelectorAll(".view-card"), function (b) {
+      b.addEventListener("click", function () { chooseView(b.getAttribute("data-view"), true); });
+    });
+    // Counts arrive a moment later - the whole list has to be read once anyway.
+    (async function () {
+      try {
+        var before = S.getView();
+        S.setView("managers");
+        var m = (await S.listHandovers()).length;
+        S.setView("engineers");
+        var e = (await S.listHandovers()).length;
+        S.setView(before);
+        var em = document.getElementById("vc-managers"), ee = document.getElementById("vc-engineers");
+        if (em) { em.textContent = t("view.count", { n: global.Fmt.num(m) }); }
+        if (ee) { ee.textContent = t("view.count", { n: global.Fmt.num(e) }); }
+      } catch (err) { /* counts are a nicety */ }
+    })();
+  }
+
+  function chooseView(v, fromGate) {
+    S.setView(v);
+    if (state.user) {
+      global.Session.set("view." + state.user.id, S.getView());
+      global.Prefs.set("view." + state.user.id, S.getView());
+    }
+    paintViewSwitch();
+    if (fromGate) { enterApp(); return; }
+    refreshBadges();
+    global.UI.toast(t("view.switched", { v: t("view." + S.getView()) }));
+    // The new handover form is the one page whose content depends on the view
+    // but which should not lose what was typed; everything else redraws.
+    if (state.parts && state.parts[0] === "handover" && (state.parts[1] === "new" || state.parts[2] === "edit")) {
+      if (global.Views.onViewChange) { global.Views.onViewChange(); }
+      return;
+    }
+    render();
+  }
+
+  function paintViewSwitch() {
+    var box = $("#view-switch");
+    var mgr = isManager();
+    document.body.classList.toggle("in-managers-view", mgr && S.getView() === "managers");
+    if (!box) { return; }
+    box.classList.toggle("hidden", !mgr);
+    Array.prototype.forEach.call(box.querySelectorAll("[data-view]"), function (b) {
+      var on = b.getAttribute("data-view") === S.getView();
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
   }
 
   /* ================================ STARTUP ================================ */
@@ -371,7 +452,7 @@
     }
 
     state.user = user;
-    enterApp();
+    startView();
     if (fresh) { global.UI.toast(t("gate.firstRun")); }
   }
 
@@ -458,7 +539,8 @@
       var key = el.getAttribute("data-route");
       el.classList.toggle("active", key === head ||
         (key === "handovers" && head === "handover") ||
-        (key === "equipment" && head === "equipment"));
+        (key === "equipment" && head === "equipment") ||
+        (key === "admin" && head === "archive-import"));
     });
     $("#sidenav").classList.remove("open");
     global.scrollTo(0, 0);
@@ -481,6 +563,7 @@
       else if (head === "notifications") { await global.Views.notifications(); }
       else if (head === "profile") { await global.Views.profile(); }
       else if (head === "admin") { await global.Views.admin(); }
+      else if (head === "archive-import") { await global.Views.archiveImport(query); }
       else if (head === "search") { await global.Views.search(query.q || ""); }
       else { navigate("dashboard"); }
     } catch (e) {
@@ -522,6 +605,11 @@
     $("#bell-btn").addEventListener("click", function () { navigate("notifications"); });
     $("#user-chip").addEventListener("click", function () { navigate("profile"); });
     $("#fab-new").addEventListener("click", function () { navigate("handover/new"); });
+    $$("#view-switch [data-view]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.getAttribute("data-view") !== S.getView()) { chooseView(b.getAttribute("data-view"), false); }
+      });
+    });
 
     var searchBox = $("#global-search");
     searchBox.addEventListener("keydown", function (e) {
@@ -570,6 +658,8 @@
      is itself a navigation Chrome may refuse. */
   function reboot() {
     state.user = null;
+    S.setView("engineers");
+    paintViewSwitch();
     state.activeLockId = null;
     boot();
   }
@@ -579,9 +669,11 @@
     refreshBadges: refreshBadges,
     adjustUnread: adjustUnread,
     pickUser: function (forced) {
-      if (state.user) { global.Session.remove("auth." + state.user.id); }
+      if (state.user) { global.Session.remove("auth." + state.user.id); global.Session.remove("view." + state.user.id); }
       gatePickUser(forced);
     },
+    isManager: isManager,
+    chooseView: function (v) { chooseView(v, false); },
     signIn: function (user) { gateSignIn(user); },
     navigate: navigate,
     route: render,

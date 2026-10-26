@@ -53,6 +53,10 @@
     </div>
 
     <div class="topbar-right">
+      <div class="view-switch hidden" id="view-switch" role="group" aria-label="Database">
+        <button type="button" data-view="managers"><span data-i18n="view.switchMgr">Managers</span></button>
+        <button type="button" data-view="engineers"><span data-i18n="view.switchEng">Engineers</span></button>
+      </div>
       <button class="icon-btn bell" id="bell-btn" aria-label="Notifications">
         <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-5-5.9V4a1 1 0 1 0-2 0v1.1A6 6 0 0 0 6 11v5l-1.7 1.7V19h15.4v-1.3L18 16z"/></svg>
         <span class="bell-dot hidden" id="bell-dot"></span>

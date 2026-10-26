@@ -84,7 +84,7 @@
         (unseenSet[h.id] ? '<span class="badge s-unseen">' + esc(t("ho.unseenBadge")) + "</span>" : "") +
         statusBadge(h.status) +
         (h.archived ? archiveBadge(h) : "") +
-        (h.restricted ? restrictedBadge() : "") +
+        (h.restricted && !inMgrView() ? restrictedBadge() : "") +
       "</div>" +
       (h.snippet ? '<div class="snippet">' + esc(h.snippet) + "</div>" : "") +
       '<div class="r2">' +
@@ -93,14 +93,37 @@
         (place ? "<span>" + esc(place) + "</span>" : "") +
         (h.commentCount ? "<span>\u{1F4AC} " + global.Fmt.num(h.commentCount) + "</span>" : "") +
         (h.attachmentCount ? "<span>\u{1F4CE} " + global.Fmt.num(h.attachmentCount) + "</span>" : "") +
+        (h.openActions ? '<span class="act-count">' + esc(t("act.openCount", { n: global.Fmt.num(h.openActions) })) + "</span>" : "") +
       "</div>" +
       "<div class=\"chips\" style=\"margin-top:8px\">" + tagHtml + more + "</div>" +
       "</div>";
   }
 
+  /* Actions required: open ones first, then done, then those copied from
+     the old sheets (whose outcome is not known). */
+  function actionLabel(a) {
+    if (a.status === "done") { return t("act.doneBy", { name: personName(a.doneBy), date: global.Fmt.dateTime(a.doneAt) }); }
+    if (a.status === "old") { return t("act.fromOld"); }
+    return t("act.addedBy", { name: personName(a.by), date: a.at ? global.Fmt.dateTime(a.at) : "" });
+  }
+  function actionOrder(a) { return a.status === "open" ? 0 : a.status === "done" ? 1 : 2; }
+
   function restrictedBadge() {
     return '<span class="badge s-restricted" title="' + esc(t("mgr.notice")) + '"><svg viewBox="0 0 24 24" width="11" height="11" style="vertical-align:-1px;margin-inline-end:3px"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z"/></svg>' + esc(t("mgr.badge")) + "</span>";
   }
+
+  /* Manager views: which database the signed-in manager is looking at. */
+  function isMgr() { return !!(global.App.isManager && global.App.isManager()); }
+  function inMgrView() { return isMgr() && S.getView() === "managers"; }
+  function viewPill() {
+    if (!isMgr()) { return ""; }
+    var v = S.getView();
+    return '<span class="view-pill v-' + v + '">' + esc(t("view.pill." + v)) + "</span>";
+  }
+  function viewSub(fallback) {
+    return isMgr() ? t(S.getView() === "managers" ? "view.subMgr" : "view.subEng") : fallback;
+  }
+  var LOCK_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z"/></svg>';
 
   function archiveBadge(h) {
     var text = t("arc.badge");
@@ -141,6 +164,7 @@
     var lastWeek = all.filter(function (h) { return within(h, weekFrom); });
     var lastMonth = all.filter(function (h) { return within(h, monthFrom); });
     var followUps = lastMonth.filter(function (h) { return h.status === S.FOLLOWUP; });
+    var withActions = all.filter(function (h) { return h.openActions > 0; });
     function mine(h) { return me && h.createdBy && h.createdBy.id === me.id; }
     var myDrafts = all.filter(function (h) { return h.status === "draft" && mine(h); });
     var mySubmitted = all.filter(function (h) { return h.status !== "draft" && mine(h); });
@@ -178,7 +202,7 @@
     var recentTagList = Object.keys(recentTags).slice(0, 12);
 
     view().innerHTML =
-      '<div class="page-head"><div><h1>' + esc(t("dash.title")) + "</h1><p>" + esc(t("dash.sub")) + "</p></div>" +
+      '<div class="page-head"><div><h1>' + esc(t("dash.title")) + viewPill() + "</h1><p>" + esc(viewSub(t("dash.sub"))) + "</p></div>" +
         '<div class="spacer"></div>' +
         '<button class="btn primary" id="new-ho">' + esc(t("ho.new")) + "</button>" +
       "</div>" +
@@ -187,6 +211,7 @@
         stat(submittedToday.length, t("dash.submittedToday"), "#/handovers?d=today") +
         stat(lastWeek.length, t("dash.lastWeek"), "#/handovers?d=week") +
         stat(followUps.length, t("dash.followUps"), "#/handovers?s=" + S.FOLLOWUP + "&d=month") +
+        stat(withActions.length, t("dash.openActions"), "#/handovers?s=actions") +
         stat(mySubmitted.length, t("dash.mySubmitted"), "#/handovers?s=notdraft&mine=1") +
         stat(myDrafts.length, t("dash.myDrafts"), "#/handovers?s=draft&mine=1") +
         stat(notSeen.length, t("dash.notSeen"), "#/handovers?s=unseen", notSeen.length > 0 ? "attn" : "") +
@@ -240,7 +265,7 @@
     var all = await S.listHandovers();
 
     if (query) {
-      if (query.s && (S.STATUSES.indexOf(query.s) >= 0 || query.s === "notdraft" || query.s === "unseen")) { listFilters.status = query.s; }
+      if (query.s && (S.STATUSES.indexOf(query.s) >= 0 || query.s === "notdraft" || query.s === "unseen" || query.s === "actions")) { listFilters.status = query.s; }
       if (query.d === "today") { listFilters.from = global.Fmt.isoDay(new Date()); listFilters.to = ""; }
       if (query.tag) { listFilters.q = query.tag; }
       if (query.d === "week") { listFilters.from = daysAgo(6); listFilters.to = ""; }
@@ -250,6 +275,7 @@
 
     var statusOptions = ['<option value="">' + esc(t("ho.status")) + " \u2013 " + esc(t("common.all")) + "</option>",
       '<option value="unseen">' + esc(t("ho.unseen")) + "</option>",
+      '<option value="actions">' + esc(t("act.filter")) + "</option>",
       '<option value="notdraft">' + esc(t("ho.notDraft")) + "</option>"]
       .concat(S.STATUSES.map(function (s) { return '<option value="' + s + '">' + esc(t("status." + s)) + "</option>"; }))
       .join("");
@@ -259,7 +285,7 @@
     var shown = LIST_PAGE;
 
     view().innerHTML =
-      '<div class="page-head"><div><h1>' + esc(t("ho.list")) + "</h1><p>" + esc(t("ho.listSub")) + "</p></div>" +
+      '<div class="page-head"><div><h1>' + esc(t("ho.list")) + viewPill() + "</h1><p>" + esc(viewSub(t("ho.listSub"))) + "</p></div>" +
         '<div class="spacer"></div><div class="btn-row">' +
           '<button class="btn" id="imp-open">' + esc(t("imp.open")) + "</button>" +
           '<button class="btn primary" id="new-ho">' + esc(t("ho.new")) + "</button></div></div>" +
@@ -313,6 +339,7 @@
       var now = new Date();
       var rows = all.filter(function (h) {
         if (listFilters.status === "unseen") { if (!unseen[h.id]) { return false; } }
+        else if (listFilters.status === "actions") { if (!(h.openActions > 0)) { return false; } }
         else if (listFilters.status === "notdraft") { if (h.status === "draft") { return false; } }
         else if (listFilters.status && h.status !== listFilters.status) { return false; }
 
@@ -428,6 +455,9 @@
           (rec.team || []).map(function (m) { return personName(m); }).join(" | "),
           (rec.attachments || []).length,
           rec.description || "",
+          (rec.actions || []).map(function (a) {
+            return a.text + " [" + t("act.st." + (a.status || "open")) + (a.status === "done" ? ": " + personName(a.doneBy) + " " + global.Fmt.date(a.doneAt) : "") + "]";
+          }).join(" | "),
           (rec.comments || []).map(function (c) {
             return personName(c.by) + " (" + global.Fmt.date(c.at) + "): " + c.text;
           }).join(" | ")
@@ -436,7 +466,7 @@
       downloadCsv("handovers-" + global.Fmt.isoDay(new Date()) + ".csv", [
         t("csv.id"), t("ho.title"), t("ho.status"), t("ho.area"), t("ho.createdBy"),
         t("ho.createdAt"), t("ho.updatedAt"), t("ho.due"), t("ho.tags"), t("eq.upper"),
-        t("ho.team"), t("ho.attachments"), t("ho.description"), t("ho.comments")
+        t("ho.team"), t("ho.attachments"), t("ho.description"), t("act.label"), t("ho.comments")
       ], rows);
       global.UI.toast(t("ho.exportDone", { n: global.Fmt.num(rows.length) }), "ok");
     } catch (e) {
@@ -444,6 +474,16 @@
     }
     global.UI.busy(false);
   }
+
+  function audOption(value, title, desc) {
+    return '<label class="kind-opt aud-' + value + '">' +
+      '<input type="radio" name="f-aud" value="' + value + '">' +
+      '<span class="kind-mark" aria-hidden="true"></span>' +
+      '<span class="kind-body"><span class="kind-title">' + esc(title) + "</span>" +
+        '<span class="kind-desc">' + esc(desc) + "</span></span>" +
+      "</label>";
+  }
+  var formViewHook = null;
 
   function kindOption(value, title, desc) {
     return '<label class="kind-opt kind-' + value + '">' +
@@ -504,6 +544,7 @@
     }
 
     var chosenTags = rec ? (rec.tags || []).slice() : [];
+    var chosenActions = rec ? JSON.parse(JSON.stringify(rec.actions || [])) : [];
     var chosenTeam = rec ? (rec.team || []).slice() : [];
 
     view().innerHTML =
@@ -519,6 +560,12 @@
           '<textarea class="input" id="f-desc" rows="7" placeholder="' + esc(t("ho.descriptionPh")) + '"></textarea>' +
           '<div class="err-msg hidden" id="e-desc"></div></div>' +
 
+        '<div class="field"><label>' + esc(t("act.label")) + ' <span class="faint">(' + esc(t("common.optional")) + ')</span></label>' +
+          '<div class="act-list" id="act-edit"></div>' +
+          '<div class="act-add-row"><input class="input" id="act-input" maxlength="400" placeholder="' + esc(t("act.ph")) + '">' +
+            '<button class="btn" type="button" id="act-add">' + esc(t("act.add")) + "</button></div>" +
+          '<div class="small faint" style="margin-top:6px">' + esc(t("act.hint")) + "</div></div>" +
+
         '<div class="form-row">' +
           '<div class="field"><label>' + esc(t("ho.area")) + "</label>" +
             '<div style="display:flex;gap:7px">' +
@@ -528,6 +575,8 @@
           '<div class="field"><label>' + esc(t("ho.due")) + ' <span class="faint">(' + esc(t("common.optional")) + ')</span></label>' +
             '<input type="date" class="input" id="f-due"></div>' +
         "</div>" +
+
+        (isNew ? '<div class="field hidden" id="f-aud-box"></div>' : "") +
 
         '<div class="field"><label>' + esc(t("ho.kind")) + ' <span class="req">*</span></label>' +
           '<div class="kind-picker" id="f-kind" role="radiogroup">' +
@@ -567,11 +616,81 @@
     }
     // Drafts remember which kind they were going to be; default is Info.
     var kindNow = rec ? (rec.status !== "draft" ? rec.status : (rec.kind || "info")) : "info";
+
+    /* A manager writing a new handover: in the managers' view it goes to the
+       managers' database; in the engineers' view they must say who sees it. */
+    var chosenAud = null;
+    function renderAud() {
+      var box = $("#f-aud-box");
+      if (!box) { return; }
+      if (!isMgr()) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+      box.classList.remove("hidden");
+      if (inMgrView()) {
+        box.innerHTML = "<label>" + esc(t("aud.label")) + "</label>" +
+          '<div class="aud-note">' + LOCK_SVG + "<span>" + esc(t("aud.noteMgr")) + "</span></div>";
+        return;
+      }
+      box.innerHTML = "<label>" + esc(t("aud.label")) + ' <span class="req">*</span></label>' +
+        '<div class="kind-picker" role="radiogroup">' +
+          audOption("all", t("aud.all"), t("aud.allDesc")) +
+          audOption("managers", t("aud.mgr"), t("aud.mgrDesc")) +
+        "</div>" +
+        '<div class="err-msg hidden" id="e-aud"></div>';
+      $$('input[name="f-aud"]').forEach(function (r) {
+        r.checked = r.value === chosenAud;
+        r.addEventListener("change", function () {
+          chosenAud = r.value;
+          var e = $("#e-aud");
+          if (e) { e.classList.add("hidden"); }
+        });
+      });
+    }
+    renderAud();
+    formViewHook = renderAud;
     $$('input[name="f-kind"]').forEach(function (r) { r.checked = r.value === kindNow; });
     function chosenKind() {
       var r = document.querySelector('input[name="f-kind"]:checked');
       return r ? r.value : "info";
     }
+
+    /* Actions required on the form: open ones can be reworded or removed;
+       done ones are history and stay as they are. */
+    function syncActionTexts() {
+      $$("#act-edit [data-act-text]").forEach(function (inp) {
+        var a = chosenActions.filter(function (x) { return x.id === inp.getAttribute("data-act-text"); })[0];
+        if (a) { a.text = inp.value; }
+      });
+    }
+    function renderActEdit() {
+      var list = chosenActions.slice().sort(function (a, b) { return actionOrder(a) - actionOrder(b); });
+      $("#act-edit").innerHTML = list.length ? list.map(function (a) {
+        if (a.status === "open") {
+          return '<div class="act open"><span class="act-mark" aria-hidden="true"></span>' +
+            '<input class="input act-text-input" data-act-text="' + esc(a.id) + '" maxlength="400" value="' + esc(a.text) + '">' +
+            '<button type="button" class="btn sm ghost" data-act-rm="' + esc(a.id) + '" title="' + esc(t("common.remove")) + '">\u00d7</button></div>';
+        }
+        return '<div class="act ' + esc(a.status) + '"><span class="act-mark" aria-hidden="true"></span>' +
+          '<div class="act-body"><div class="act-text">' + esc(a.text) + '</div><div class="act-meta">' + esc(actionLabel(a)) + "</div></div></div>";
+      }).join("") : "";
+      $$("#act-edit [data-act-rm]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          syncActionTexts();
+          chosenActions = chosenActions.filter(function (x) { return x.id !== b.getAttribute("data-act-rm"); });
+          renderActEdit();
+        });
+      });
+    }
+    function addActionFromInput() {
+      var text = $("#act-input").value.trim();
+      if (!text) { return; }
+      syncActionTexts();
+      chosenActions.push({ id: global.Util.uuid(), text: text, status: "open", isNew: true });
+      $("#act-input").value = "";
+      renderActEdit();
+    }
+    renderActEdit();
+    $("#act-add").addEventListener("click", addActionFromInput);
+    $("#act-input").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); addActionFromInput(); } });
 
     function renderChips() {
       $("#tag-chips").innerHTML = chosenTags.length
@@ -719,10 +838,29 @@
       }
       setErr("#e-title", title ? "" : t("err.titleRequired"));
       setErr("#e-desc", desc ? "" : t("err.descRequired"));
-      if (!ok) { return; }
+      var restricted;
+      if (isNew && isMgr()) {
+        if (inMgrView()) { restricted = "managers"; }
+        else if (!chosenAud) { setErr("#e-aud", t("aud.required")); }
+        else if (chosenAud === "managers") { restricted = "managers"; }
+      }
+      if (!ok) {
+        var firstErr = document.querySelector(".err-msg:not(.hidden)");
+        if (firstErr && firstErr.scrollIntoView) { firstErr.scrollIntoView({ block: "center" }); }
+        return;
+      }
 
       var me = global.App.user();
       var now = new Date().toISOString();
+      // A line still in the box counts as added.
+      if ($("#act-input").value.trim()) { addActionFromInput(); }
+      syncActionTexts();
+      var actions = chosenActions.filter(function (a) { return a.status !== "open" || String(a.text || "").trim(); }).map(function (a) {
+        var out = JSON.parse(JSON.stringify(a));
+        out.text = String(out.text || "").trim();
+        if (out.isNew) { delete out.isNew; out.by = { id: me.id, name: me.name }; out.at = now; }
+        return out;
+      });
       global.UI.busy(true, t("common.saving"));
       try {
         if (isNew) {
@@ -734,11 +872,12 @@
             unit: "", shift: "",
             tags: chosenTags,
             team: chosenTeam,
+            actions: actions,
             status: status,
             kind: chosenKind(),
             dueDate: $("#f-due").value || null,
             createdBy: { id: me.id, name: me.name },
-            restricted: me.role === "manager" ? "managers" : undefined,
+            restricted: restricted,
             createdAt: now,
             updatedAt: now,
             history: [{ status: status, by: personName(me), byId: me.id, at: now }],
@@ -756,6 +895,7 @@
           rec.area = $("#f-area").value;
           rec.tags = chosenTags;
           rec.team = chosenTeam;
+          rec.actions = actions;
           rec.dueDate = $("#f-due").value || null;
           rec.kind = chosenKind();
           var wasDraft = rec.status === "draft";
@@ -770,7 +910,7 @@
           }
         }
         global.UI.busy(false);
-        global.UI.toast(isNew ? t("ho.created") : t("ho.updated"), "ok");
+        global.UI.toast(isNew ? (isMgr() ? t(restricted ? "aud.savedMgr" : "aud.savedAll") : t("ho.created")) : t("ho.updated"), "ok");
         go("#/handover/" + rec.id);
       } catch (e) {
         global.UI.busy(false);
@@ -812,7 +952,10 @@
     var activity = (rec.history || []).map(function (h) {
       return { at: h.at, text: t("ho.statusChanged") + ": " + t("status." + h.status), who: h.by };
     });
-    (rec.comments || []).forEach(function (c) { activity.push({ at: c.at, text: t("ho.commentAdded"), who: personName(c.by) }); });
+    (rec.comments || []).forEach(function (c) { activity.push({ at: c.at, text: t(c.actionId ? "act.activityDone" : "ho.commentAdded"), who: personName(c.by) }); });
+    (rec.actions || []).forEach(function (a) {
+      if (a.at && a.status !== "old") { activity.push({ at: a.at, text: t("act.activityAdded") + ": " + a.text, who: personName(a.by) }); }
+    });
     (rec.attachments || []).forEach(function (a) { activity.push({ at: a.at, text: t("ho.attachmentAdded") + ": " + a.name, who: a.by ? personName(a.by) : "" }); });
     if (rec.importedFrom === "excel") {
       activity.push({ at: rec.importedAt || rec.createdAt, text: t("imp.activity"), who: personName(rec.importedBy || rec.createdBy) });
@@ -858,6 +1001,13 @@
           '<div class="card"><h3>' + esc(t("ho.description")) + "</h3>" +
             '<div class="prose">' + esc(rec.description || "") + "</div></div>" +
 
+          '<div class="card" id="act-card"><h3>' + esc(t("act.label")) + ' <span class="faint small" id="act-sum"></span></h3>' +
+            '<div class="act-list" id="act-view"></div>' +
+            '<div class="act-add-row"><input class="input" id="act-new" maxlength="400" placeholder="' + esc(t("act.addPh")) + '">' +
+              '<button class="btn" id="act-new-btn" type="button">' + esc(t("act.add")) + "</button></div>" +
+            '<div class="small faint" style="margin-top:6px">' + esc(t(rec.restricted ? "act.whoMgr" : "act.whoAll")) + "</div>" +
+          "</div>" +
+
           '<div class="card"><h3>' + esc(t("ho.attachments")) + " (" + global.Fmt.num((rec.attachments || []).length) + ")</h3>" +
             '<div class="attach-grid" id="attach-grid"></div>' +
             '<div class="dropzone" id="dropzone" style="margin-top:12px">' + esc(t("ho.dropFiles")) + "<br>" +
@@ -868,6 +1018,7 @@
           '<div class="card"><h3>' + esc(t("ho.comments")) + " (" + global.Fmt.num((rec.comments || []).length) + ")</h3>" +
             '<div id="comment-list"></div>' +
             '<div style="margin-top:12px">' +
+              '<select class="input hidden" id="c-done" style="margin-bottom:8px"></select>' +
               '<textarea class="input" id="c-text" rows="3" placeholder="' + esc(t("ho.commentPh")) + '"></textarea>' +
               '<div class="btn-row" style="margin-top:8px">' +
                 '<button class="btn primary" id="c-post">' + esc(t("ho.post")) + "</button>" +
@@ -903,9 +1054,15 @@
         "</div>" +
       "</div>";
 
+    renderActions();
     renderComments();
     renderAttachments();
     wireCards(view());
+    $("#act-new-btn").addEventListener("click", addActionHere);
+    $("#act-new").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); addActionHere(); } });
+    $("#c-done").addEventListener("change", function () {
+      $("#c-text").placeholder = $("#c-done").value ? t("act.donePh") : t("ho.commentPh");
+    });
 
     $("#btn-back").addEventListener("click", function () { go("#/handovers"); });
     if (mayEdit) {
@@ -952,12 +1109,74 @@
       return '<div class="m"><span class="k">' + esc(k) + '</span><span class="v">' + (raw ? v : v) + "</span></div>";
     }
 
+    function actionById(id) { return (rec.actions || []).filter(function (a) { return a.id === id; })[0] || null; }
+
+    function renderActions() {
+      var list = (rec.actions || []).slice().sort(function (a, b) {
+        return actionOrder(a) - actionOrder(b) || String(a.at || "").localeCompare(String(b.at || ""));
+      });
+      var open = list.filter(function (a) { return a.status === "open"; });
+      $("#act-sum").textContent = list.length ? "\u00b7 " + t("act.sumOpen", { n: global.Fmt.num(open.length), total: global.Fmt.num(list.length) }) : "";
+      $("#act-view").innerHTML = list.length ? list.map(function (a) {
+        return '<div class="act ' + esc(a.status || "open") + '" data-act="' + esc(a.id) + '"><span class="act-mark" aria-hidden="true"></span>' +
+          '<div class="act-body"><div class="act-text">' + esc(a.text) + "</div>" +
+            '<div class="act-meta">' + esc(actionLabel(a)) +
+              (a.status === "done" && a.doneComment ? ' \u00b7 <a href="#" data-goto-comment="' + esc(a.doneComment) + '">' + esc(t("act.seeComment")) + "</a>" : "") +
+            "</div></div>" +
+          (a.status === "open" ? '<button type="button" class="btn sm" data-act-done="' + esc(a.id) + '">' + esc(t("act.markDone")) + "</button>" : "") +
+          "</div>";
+      }).join("") : '<p class="faint small" style="margin:0 0 10px">' + esc(t("act.none")) + "</p>";
+
+      var sel = $("#c-done");
+      var keep = sel.value;
+      sel.innerHTML = '<option value="">' + esc(t("act.noneDone")) + "</option>" + open.map(function (a) {
+        return '<option value="' + esc(a.id) + '">' + esc(t("act.completes", { text: a.text.length > 90 ? a.text.slice(0, 88) + "\u2026" : a.text })) + "</option>";
+      }).join("");
+      sel.value = open.some(function (a) { return a.id === keep; }) ? keep : "";
+      sel.classList.toggle("hidden", !open.length);
+
+      $$("#act-view [data-act-done]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          sel.value = b.getAttribute("data-act-done");
+          $("#c-text").placeholder = t("act.donePh");
+          $("#c-text").scrollIntoView({ block: "center" });
+          $("#c-text").focus();
+        });
+      });
+      $$("#act-view [data-goto-comment]").forEach(function (l) {
+        l.addEventListener("click", function (e) {
+          e.preventDefault();
+          var el = document.getElementById("cm-" + l.getAttribute("data-goto-comment"));
+          if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); setTimeout(function () { el.classList.remove("flash"); }, 1600); }
+        });
+      });
+    }
+
+    async function addActionHere() {
+      var text = $("#act-new").value.trim();
+      if (!text) { $("#act-new").focus(); return; }
+      global.UI.busy(true, t("common.saving"));
+      try {
+        rec = await S.addAction(rec.id, {
+          id: global.Util.uuid(), text: text, status: "open",
+          by: { id: me.id, name: me.name }, at: new Date().toISOString()
+        });
+        await S.addNotification({ type: "action", actor: { id: me.id, name: me.name }, handoverId: rec.id, title: rec.title, text: text });
+        $("#act-new").value = "";
+        global.UI.busy(false);
+        global.UI.toast(t("act.added"), "ok");
+        handoverDetail(rec.id);
+      } catch (e) { global.UI.busy(false); global.UI.toast(t("err.write"), "err"); }
+    }
+
     function renderComments() {
       var list = (rec.comments || []).slice().sort(function (a, b) { return String(a.at).localeCompare(String(b.at)); });
       $("#comment-list").innerHTML = list.length ? list.map(function (c) {
-        return '<div class="comment"><span class="avatar">' + esc(initials(personName(c.by))) + "</span>" +
+        var done = c.actionId ? actionById(c.actionId) : null;
+        return '<div class="comment" id="cm-' + esc(c.id) + '"><span class="avatar">' + esc(initials(personName(c.by))) + "</span>" +
           '<div class="c-body"><div class="c-head"><b>' + esc(personName(c.by)) + "</b>" +
             '<span class="faint small">' + esc(global.Fmt.dateTime(c.at)) + "</span></div>" +
+            (done ? '<div class="c-done">\u2713 ' + esc(t("act.doneLabel")) + ": " + esc(done.text) + "</div>" : "") +
             '<div class="c-text">' + esc(c.text) + "</div></div></div>";
       }).join("") : '<p class="faint small">' + esc(t("common.none")) + "</p>";
     }
@@ -1048,15 +1267,25 @@
 
     async function postComment() {
       var text = $("#c-text").value.trim();
-      if (!text) { return; }
+      var actionId = $("#c-done").value || "";
+      if (!text) {
+        if (actionId) { global.UI.toast(t("act.needText"), "err"); }
+        $("#c-text").focus();
+        return;
+      }
       global.UI.busy(true, t("common.saving"));
       try {
-        rec = await S.appendComment(rec.id, {
-          id: global.Util.uuid(), text: text, at: new Date().toISOString(),
-          by: { id: me.id, name: me.name }
-        });
-        await S.addNotification({ type: "comment", actor: { id: me.id, name: me.name }, handoverId: rec.id, title: rec.title });
+        var comment = { id: global.Util.uuid(), text: text, at: new Date().toISOString(), by: { id: me.id, name: me.name } };
+        if (actionId) { comment.actionId = actionId; }
+        rec = await S.appendComment(rec.id, comment);
+        var done = actionId ? actionById(actionId) : null;
+        await S.addNotification(done
+          ? { type: "actionDone", actor: { id: me.id, name: me.name }, handoverId: rec.id, title: rec.title, text: done.text }
+          : { type: "comment", actor: { id: me.id, name: me.name }, handoverId: rec.id, title: rec.title });
         $("#c-text").value = "";
+        $("#c-text").placeholder = t("ho.commentPh");
+        global.UI.busy(false);
+        if (done) { global.UI.toast(t("act.doneToast"), "ok"); handoverDetail(rec.id); return; }
         renderComments();
       } catch (e) { global.UI.toast(t("err.write"), "err"); }
       global.UI.busy(false);
@@ -1438,6 +1667,8 @@
     var who = personName(n.actor);
     if (n.type === "handover") { return t("notif.newHandover", { user: who }); }
     if (n.type === "comment") { return t("notif.newComment", { user: who }); }
+    if (n.type === "action") { return t("notif.action", { user: who }) + (n.text ? ": " + n.text : ""); }
+    if (n.type === "actionDone") { return t("notif.actionDone", { user: who }) + (n.text ? ": " + n.text : ""); }
     if (n.type === "attachment") { return t("notif.newAttachment", { user: who }); }
     if (n.type === "deleted") { return t("notif.deleted", { user: who }); }
     if (n.type === "import") { return t("notif.imported", { user: who, n: n.count || "" }); }
@@ -1685,16 +1916,9 @@
         '<div class="err-msg hidden" id="pw-err"></div>' +
         '<button class="btn" id="pw-save">' + esc(t("common.save")) + "</button></div>" +
 
-      '<div class="card"><h3>' + esc(t("imp.adminCard")) + "</h3>" +
-        '<p class="small faint">' + esc(t("imp.adminCardDesc")) + "</p>" +
-        '<div class="btn-row"><button class="btn" id="bulk-tpl">' + esc(t("imp.adminDownload")) + "</button>" +
-        '<button class="btn primary" id="bulk-open">' + esc(t("imp.adminOpen")) + "</button></div></div>" +
-
-      '<div class="card"><h3>' + esc(t("arc.title")) + "</h3>" +
-        '<p class="small faint">' + esc(t("arc.desc")) + "</p>" +
-        '<p class="small" id="arc-status"></p>' +
-        '<div class="btn-row"><button class="btn" id="arc-btn">' + esc(t("arc.choose")) + "</button></div>" +
-        '<input type="file" id="arc-file" accept=".json,application/json" class="hidden"></div>' +
+      '<h3 style="margin:22px 0 4px">' + esc(t("db.sectionTitle")) + "</h3>" +
+      '<p class="small faint" style="margin:0 0 12px">' + esc(t("db.sectionDesc")) + "</p>" +
+      '<div class="db-cards">' + dbCard("engineers") + dbCard("managers") + "</div>" +
 
       '<div class="card"><h3>' + esc(t("del.adminTitle")) + "</h3>" +
         '<p class="small faint">' + esc(t("del.adminDesc")) + "</p>" +
@@ -1896,53 +2120,26 @@
     }
     renderDeleted();
 
-    /* ---- old handovers (Excel import) ---- */
+    /* ---- imports, one set per database ---- */
     async function renderArchiveStatus() {
       try { await S.loadArchive(); } catch (e) { /* shown as none */ }
-      var info = S.archiveInfo();
-      $("#arc-status").textContent = info
-        ? t("arc.current", { n: global.Fmt.num(info.count), date: global.Fmt.dateTime(info.importedAt), by: info.by || "\u2014" })
-        : t("arc.none");
+      ["engineers", "managers"].forEach(function (db) {
+        var info = S.archiveInfo(db);
+        var el = $("#arc-status-" + db);
+        if (el) {
+          el.textContent = info
+            ? t("arc.current", { n: global.Fmt.num(info.count), date: global.Fmt.dateTime(info.importedAt), by: info.by || "\u2014" })
+            : t("arc.none");
+        }
+      });
     }
     renderArchiveStatus();
-    $("#bulk-tpl").addEventListener("click", function () { downloadTemplate(true); });
-    $("#bulk-open").addEventListener("click", function () { go("#/handover/import?mode=admin"); });
-    $("#arc-btn").addEventListener("click", function () { $("#arc-file").click(); });
-    $("#arc-file").addEventListener("change", async function (e) {
-      var file = e.target.files && e.target.files[0];
-      e.target.value = "";
-      if (!file) { return; }
-      var bundle = null;
-      try { bundle = JSON.parse(await file.text()); } catch (err) { bundle = null; }
-      if (!bundle || bundle.kind !== "plant-handover-archive" || !Array.isArray(bundle.records)) {
-        global.UI.toast(t("arc.badFile"), "err");
-        return;
-      }
-      var years = {};
-      bundle.records.forEach(function (r) { years[r.createdAt ? String(r.createdAt).slice(0, 4) : "undated"] = true; });
-      var have = {};
-      (S.structure().areas || []).forEach(function (a) { have[String(a.id).toLowerCase()] = true; });
-      var newAreas = (bundle.areas || []).filter(function (a) { return !have[String(a.id).toLowerCase()]; }).length;
-      var ok = await global.UI.confirm(t("arc.confirm", {
-        n: global.Fmt.num(bundle.records.length), b: global.Fmt.num(Object.keys(years).length), a: global.Fmt.num(newAreas)
-      }));
-      if (!ok) { return; }
-      global.UI.busy(true, t("common.saving"));
-      try {
-        var me = global.App.user();
-        var res = await S.importArchive(bundle, me ? me.name : "", function (i, n, name) {
-          var lab = document.getElementById("busy-label");
-          if (lab) { lab.textContent = t("arc.progress", { i: global.Fmt.num(i), n: global.Fmt.num(n), name: name }); }
-        });
-        global.UI.busy(false);
-        global.UI.toast(t("arc.done", { n: global.Fmt.num(res.count) }), "ok");
-        renderAreas();
-        renderArchiveStatus();
-      } catch (err) {
-        global.UI.busy(false);
-        S.log("archive import failed", err && (err.name + ": " + err.message));
-        global.UI.toast(err && err.name === "FormatError" ? t("arc.badFile") : t("err.write"), "err");
-      }
+    $$("[data-bulk-tpl]").forEach(function (b) { b.addEventListener("click", function () { downloadTemplate(true); }); });
+    $$("[data-bulk-open]").forEach(function (b) {
+      b.addEventListener("click", function () { go("#/handover/import?mode=admin&db=" + b.getAttribute("data-bulk-open")); });
+    });
+    $$("[data-arc-open]").forEach(function (b) {
+      b.addEventListener("click", function () { go("#/archive-import?db=" + b.getAttribute("data-arc-open")); });
     });
 
     $("#reindex").addEventListener("click", async function () {
@@ -1951,6 +2148,20 @@
       catch (e) { global.UI.toast(t("err.write"), "err"); }
       global.UI.busy(false);
     });
+  }
+
+  function dbCard(db) {
+    return '<div class="card db-card v-' + db + '"><h3>' + esc(t("view.pill." + db)) + "</h3>" +
+      '<p class="small faint" style="margin:0">' + esc(t("db.desc." + db)) + "</p>" +
+      "<h4>" + esc(t("db.archive")) + "</h4>" +
+      '<p class="small" id="arc-status-' + db + '" style="margin:0 0 4px"></p>' +
+      '<p class="small faint" style="margin:0 0 8px">' + esc(t("db.archiveDesc")) + "</p>" +
+      '<div class="btn-row"><button class="btn" id="arc-open-' + db + '" data-arc-open="' + db + '">' + esc(t("db.archiveOpen")) + "</button></div>" +
+      "<h4>" + esc(t("db.bulk")) + "</h4>" +
+      '<p class="small faint" style="margin:0 0 8px">' + esc(t("db.bulkDesc." + db)) + "</p>" +
+      '<div class="btn-row"><button class="btn" id="bulk-tpl-' + db + '" data-bulk-tpl="' + db + '">' + esc(t("imp.adminDownload")) + "</button>" +
+        '<button class="btn primary" id="bulk-open-' + db + '" data-bulk-open="' + db + '">' + esc(t("imp.adminOpen")) + "</button></div>" +
+      "</div>";
   }
 
   function adminGate() {
@@ -2245,6 +2456,17 @@
       var un = global.Util.normalize(u.name);
       return un.indexOf(n) === 0 || (" " + un + " ").indexOf(" " + n + " ") >= 0;
     });
+    // Same tolerance as the old-sheet import: initials and "El"/"Abdel"
+    // spellings ignored, so "K. Nabil" or "Abd Elrazek" still find the person.
+    if (!partial.length) {
+      var tk = nameTokens(name), comp = tk.join("");
+      if (tk.length) {
+        partial = list.filter(function (u) {
+          var ut = nameTokens(u.name);
+          return tk.every(function (x) { return ut.indexOf(x) >= 0; }) || (comp.length >= 5 && ut.join("").indexOf(comp) >= 0);
+        });
+      }
+    }
     var act = partial.filter(function (u) { return u.active !== false; });
     return act.length ? act : partial;
   }
@@ -2291,6 +2513,7 @@
       else if (h === "equipment tags" || h === "tags" || h === "tag") { col.tags = j; }
       else if (h === "worked with" || h === "team" || /^worked with \d+$/.test(h)) { (col.team = col.team || []).push(j); }
       else if (h === "due date" || h === "due") { col.due = j; }
+      else if (h === "action required" || h === "actions required" || h === "actions") { col.act = j; }
     });
     if (col.date === undefined || col.desc === undefined || (admin && col.by === undefined)) { return { error: noHeader }; }
 
@@ -2329,15 +2552,15 @@
             it.errors.push(t("imp.eByAmbig", { v: whoIs(byTxt, many) }));
           } else if (u0) { it.author = { id: u0.id, name: u0.name, role: u0.role || "" }; }
           else { it.author = { id: null, name: byTxt, role: "" }; it.warnings.push(t("imp.wBy", { v: byTxt })); }
-          if (it.author && it.author.role === "manager") { it.restricted = true; it.warnings.push(t("imp.wMgr")); }
         }
       } else if (me) {
         it.author = { id: me.id, name: me.name, role: me.role || "" };
-        it.restricted = me.role === "manager";
       }
 
       it.title = normText(get("title"));
       it.desc = normText(get("desc"));
+      // Actions required: one per line (or separated by ";").
+      it.actions = normText(get("act")).split(/\s*(?:\n|;)\s*/).map(function (x) { return x.replace(/^(?:[-\u2022*]+\s*|\d+[.)]\s+)/, "").trim(); }).filter(Boolean);
       if (!it.title) { it.errors.push(t("imp.eTitle")); }
       if (it.title.length > 160) { it.title = it.title.slice(0, 160); it.warnings.push(t("imp.wTitleLong")); }
       if (!it.desc) { it.errors.push(t("imp.eDesc")); }
@@ -2423,6 +2646,7 @@
   async function handoverImport(query) {
     var me = global.App.user();
     var admin = !!(query && query.mode === "admin");
+    var db = admin ? (query.db === "managers" ? "managers" : "engineers") : "";
     if (!global.XLSX) { view().innerHTML = emptyBlock(t("imp.noReader")); return; }
     if (admin && !adminUnlocked) {
       view().innerHTML = emptyBlock(t("imp.adminLocked")) +
@@ -2431,15 +2655,16 @@
       return;
     }
     view().innerHTML =
-      '<div class="page-head"><div><h1>' + esc(t(admin ? "imp.adminTitle" : "imp.title")) + "</h1><p>" +
-        esc(t(admin ? "imp.adminSub" : "imp.sub")) + "</p></div>" +
+      '<div class="page-head"><div><h1>' + esc(t(admin ? "imp.adminTitle" : "imp.title")) +
+        (admin ? '<span class="view-pill v-' + db + '">' + esc(t("view.pill." + db)) + "</span>" : viewPill()) + "</h1><p>" +
+        esc(admin ? t("imp.adminSubDb." + db) : t("imp.sub")) + "</p></div>" +
         '<div class="spacer"></div><button class="btn ghost" id="imp-back">' + esc(t("common.back")) + "</button></div>" +
       '<div class="grid two">' +
         '<div class="card"><h3>' + esc(t("imp.step1")) + "</h3>" +
           '<p class="small faint">' + esc(t(admin ? "imp.adminStep1Desc" : "imp.step1Desc")) + "</p>" +
           '<button class="btn" id="imp-tpl">' + esc(t(admin ? "imp.adminDownload" : "imp.download")) + "</button></div>" +
         '<div class="card"><h3>' + esc(t("imp.step2")) + "</h3>" +
-          '<p class="small faint">' + esc(admin ? t("imp.adminStep2Desc") : (S.viewerIsManager() ? t("imp.step2DescMgr") : t("imp.step2Desc"))) + "</p>" +
+          '<p class="small faint">' + esc(admin ? t("imp.adminStep2Desc") : (isMgr() ? t(inMgrView() ? "imp.step2DescMgr" : "imp.step2DescMgrChoose") : t("imp.step2Desc"))) + "</p>" +
           '<div class="dropzone imp-drop" id="imp-drop">' +
             '<div class="imp-drop-icon" aria-hidden="true">&#8681;</div>' +
             '<div class="imp-drop-text">' + esc(t("imp.dropHere")) + "</div>" +
@@ -2525,8 +2750,8 @@
             var cls = x.errors.length || x.skip ? "imp-bad" : (x.warnings.length ? "imp-warn" : "imp-ok");
             return '<tr class="' + cls + '"><td>' + x.line + "</td>" +
               "<td>" + esc(x.date ? global.Fmt.date(ymdIso(x.date)) : "—") + "</td>" +
-              (admin ? "<td>" + esc(x.author ? x.author.name : "—") + (x.restricted ? " " + restrictedBadge() : "") + "</td>" : "") +
-              "<td>" + esc(x.title || "—") + "</td>" +
+              (admin ? "<td>" + esc(x.author ? x.author.name : "—") + "</td>" : "") +
+              "<td>" + esc(x.title || "—") + (x.actions.length ? '<div class="act-count" style="margin-top:4px">' + esc(t("act.openCount", { n: x.actions.length })) + "</div>" : "") + "</td>" +
               "<td>" + esc(x.area || "—") + "</td>" +
               "<td>" + (x.status ? statusBadge(x.status) : "—") + "</td>" +
               "<td>" + esc(x.tags.join(", ") || "—") + "</td>" +
@@ -2540,10 +2765,28 @@
     }
 
     async function runImport(ready, authorCount) {
-      var msg = admin ? t("imp.adminConfirm", { n: global.Fmt.num(ready.length), p: global.Fmt.num(authorCount) })
-                      : t("imp.confirm", { n: global.Fmt.num(ready.length) });
-      var ok = await global.UI.confirm(msg, { okLabel: t("imp.go", { n: global.Fmt.num(ready.length) }) });
-      if (!ok) { return; }
+      var n = global.Fmt.num(ready.length);
+      var toManagers = false;
+      if (!admin && isMgr() && !inMgrView()) {
+        // A manager in the engineers' view decides who sees the imported rows.
+        var choice = await global.UI.modal({
+          title: t("aud.importTitle"),
+          body: "<p>" + esc(t("aud.importBody", { n: n })) + "</p>",
+          buttons: [
+            { label: t("common.cancel"), value: null },
+            { label: t("aud.all"), value: "all" },
+            { label: t("aud.mgr"), value: "managers", primary: true }
+          ]
+        });
+        if (!choice) { return; }
+        toManagers = choice === "managers";
+      } else {
+        toManagers = admin ? db === "managers" : inMgrView();
+        var msg = admin ? t("imp.adminConfirmDb", { n: n, p: global.Fmt.num(authorCount), db: t("view.pill." + db) })
+                        : t(toManagers ? "imp.confirmMgr" : "imp.confirm", { n: n });
+        var ok = await global.UI.confirm(msg, { okLabel: t("imp.go", { n: n }) });
+        if (!ok) { return; }
+      }
       global.UI.busy(true, t("common.saving"));
       try {
         var newAreas = {}, newTags = {};
@@ -2561,6 +2804,9 @@
             title: x.title, description: x.desc,
             plant: "", area: x.area || "", unit: "", shift: "",
             tags: x.tags, team: x.team,
+            actions: x.actions.map(function (text) {
+              return { id: global.Util.uuid(), text: text, status: "open", by: x.author.id ? { id: x.author.id, name: x.author.name } : { id: null, name: x.author.name }, at: at };
+            }),
             status: x.status, kind: x.status === "draft" ? "info" : x.status,
             dueDate: x.due || null,
             createdBy: x.author.id ? { id: x.author.id, name: x.author.name } : { id: null, name: x.author.name },
@@ -2570,7 +2816,7 @@
             importedFrom: "excel", importedAt: now,
             importedBy: me ? { id: me.id, name: me.name } : null
           };
-          if (x.restricted) { rec.restricted = "managers"; }
+          if (toManagers) { rec.restricted = "managers"; }
           return rec;
         });
         await S.addHandovers(recs, function (i, n) {
@@ -2586,7 +2832,7 @@
           if (closed) { await S.addNotification({ type: "import", actor: actor, handoverId: "", count: closed, title: t("imp.notifTitle", { n: closed }), restricted: "managers" }); }
         } catch (e) { /* the import itself succeeded */ }
         global.UI.busy(false);
-        global.UI.toast(t("imp.done", { n: global.Fmt.num(recs.length) }), "ok");
+        global.UI.toast(t(toManagers ? "imp.doneMgr" : "imp.done", { n: global.Fmt.num(recs.length) }), "ok");
         listFilters = { q: "", status: "", area: "", from: "", to: "", creator: admin ? "" : me.id, worked: "", tag: "", src: "", mine: false };
         go("#/handovers");
       } catch (err) {
@@ -2597,12 +2843,550 @@
     }
   }
 
+  /* ======================= OLD HANDOVER ARCHIVE IMPORT =======================
+     Administration loads the old handover sheets into ONE database's archive:
+     the engineers' or the managers'. Each is imported on its own and replaces
+     only its own archive. Accepts the old Excel sheets themselves (every sheet
+     of every file is read) or a prepared archive file (.json). */
+
+  var OLD_AREA_ALIASES = {
+    "PHASE VII": "PHVII", "PHASE 7": "PHVII", "PH VII": "PHVII", "PH7": "PHVII",
+    "PHASE V": "PHV", "PHASE 5": "PHV", "PH V": "PHV", "PH5": "PHV",
+    "ROSETTA": "ROS", "TL": "T/L"
+  };
+
+  /* Stable 16-hex id from text, so importing the same sheet again gives the
+     same ids (comments added to imported entries stay attached). */
+  function hash64(str) {
+    var h1 = 0x811c9dc5, h2 = 0x9747b28c;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619);
+      h2 = Math.imul(h2 ^ c, 2246822519);
+    }
+    h2 = Math.imul(h2 ^ (h1 >>> 15), 3266489917);
+    return ("0000000" + (h1 >>> 0).toString(16)).slice(-8) + ("0000000" + (h2 >>> 0).toString(16)).slice(-8);
+  }
+
+  /* Lower-case name words without initials ("M.", "A.") or a separate
+     "El"/"Al"; a leading "el" is dropped from longer words so "ElKhadragy",
+     "El Khadragy" and "Khadragy" all compare the same. */
+  function nameTokens(s) {
+    return String(s || "").toLowerCase().replace(/\([^)]*\)/g, " ").replace(/[^a-z؀-ۿ]+/g, " ").trim().split(" ")
+      .filter(function (x) { return x.length >= 2 && x !== "el" && x !== "al"; })
+      .map(function (x) { return (x.length > 5 ? x.replace(/^el/, "") : x).replace(/^abd(el|ul|al)/, "abd"); });
+  }
+
+  /* Edit distance allowing one swap of neighbouring letters (OSA). */
+  function typoDistance(a, b) {
+    if (Math.abs(a.length - b.length) > 1) { return 2; }
+    var d = [], i, j;
+    for (i = 0; i <= a.length; i++) { d[i] = [i]; }
+    for (j = 0; j <= b.length; j++) { d[0][j] = j; }
+    for (i = 1; i <= a.length; i++) {
+      for (j = 1; j <= b.length; j++) {
+        var cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+        if (i > 1 && j > 1 && a.charAt(i - 1) === b.charAt(j - 2) && a.charAt(i - 2) === b.charAt(j - 1)) {
+          d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+        }
+      }
+    }
+    return d[a.length][b.length];
+  }
+
+  /* Words the old sheets used in the "Action Required" columns as a state
+     rather than an action: N/A, Open, Noted, Closed, Info, Follow up ... */
+  function isStatusWord(v) {
+    v = String(v || "").trim();
+    return !v || /^(n\/?a|na|none|nil|-+|open(ed)?|noted|updated|closed?|completed?|done|in progress|info|fyi|no|yes|fol+o?w\s*-?\s*up)\.?\s*(\(.*\))?$/i.test(v);
+  }
+
+  function oldSheetDate(v, monthFirst) {
+    var p = parseSheetDate(v);
+    if (!p && typeof v === "string") {
+      var m = /^\s*(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/.exec(v);
+      if (m) { p = monthFirst ? okDate(+m[3], +m[1], +m[2]) : okDate(+m[3], +m[2], +m[1]) || okDate(+m[3], +m[1], +m[2]); }
+    }
+    return p;
+  }
+
+  function oldHeaderMap(row) {
+    var col = {}, inUpdate = false;
+    function set(k, j) { if (col[k] === undefined) { col[k] = j; } }
+    row.forEach(function (c, j) {
+      var h = normHeader(c);
+      if (!h) { return; }
+      if (h === "progress" || h === "updated by" || h === "update") { inUpdate = true; }
+      if (h === "date" || h === "date of handover") { if (!inUpdate) { set("date", j); } else { set("updDate", j); } }
+      else if (/^date ?-? ?text$/.test(h)) { set("dateText", j); }
+      else if (["by", "name", "written by", "author", "engineer", "engineer name"].indexOf(h) >= 0) { set("by", j); }
+      else if (h === "subject" || h === "title") { set("title", j); }
+      else if (h === "description" || h === "details") { set("desc", j); }
+      else if (h === "status" || h === "for") { set("status", j); }
+      else if (h === "location" || h === "area" || h === "plant area") { set("location", j); }
+      else if (h === "action required") { if (!inUpdate) { set("action", j); } else { set("updAction", j); } }
+      else if (h === "progress" || h === "update") { set("progress", j); }
+      else if (h === "updated by") { set("updBy", j); }
+      else if (h === "documents" || h === "document") { set("docs", j); }
+    });
+    return col;
+  }
+
+  function cellOf(x, k) { return x.col[k] === undefined ? "" : x.row[x.col[k]]; }
+
+  /* files: [{ name, wb }]. Returns the records plus everything the preview
+     shows. Nothing is written here. */
+  function convertOldSheets(files, db) {
+    var prefix = db === "managers" ? "arcm-x" : "arc-x";
+    var areas = S.structure().areas || [];
+    var areaIds = {};
+    areas.forEach(function (a) { areaIds[String(a.id).toUpperCase()] = a.id; });
+    var tagIndex = {};
+    S.tags().forEach(function (tg) { tagIndex[String(tg.tagNo).toUpperCase().replace(/-/g, "")] = tg.tagNo; });
+    var staff = S.users().map(function (u) { var tk = nameTokens(u.name); return { u: u, tokens: tk, compact: tk.join("") }; });
+    var thisYear = new Date().getFullYear();
+
+    var nameCache = {};
+    function matchStaff(raw) {
+      if (nameCache.hasOwnProperty(raw)) { return nameCache[raw]; }
+      var tk = nameTokens(raw), comp = tk.join(""), hit = null;
+      if (tk.length) {
+        var c = staff.filter(function (s) {
+          return tk.every(function (x) { return s.tokens.indexOf(x) >= 0; }) || (comp.length >= 5 && s.compact.indexOf(comp) >= 0);
+        });
+        if (c.length > 1) {
+          var acc = c.filter(function (s) { return ACCOUNT_ROLES_UI.indexOf(s.u.role || "") >= 0; });
+          if (acc.length) { c = acc; }
+        }
+        if (c.length > 1) {
+          var exact = c.filter(function (s) { return s.compact === comp; });
+          if (exact.length === 1) { c = exact; }
+        }
+        hit = c.length === 1 ? c[0].u : null;
+      }
+      nameCache[raw] = hit;
+      return hit;
+    }
+
+    // Pass 1: read every recognisable sheet into raw rows.
+    var sheets = [], rows = [];
+    files.forEach(function (f) {
+      f.wb.SheetNames.forEach(function (sn) {
+        var data = global.XLSX.utils.sheet_to_json(f.wb.Sheets[sn], { header: 1, raw: true, defval: "" });
+        var hIdx = -1, col = null;
+        for (var i = 0; i < Math.min(data.length, 8); i++) {
+          var m = oldHeaderMap(data[i] || []);
+          if (m.desc !== undefined && (m.date !== undefined || m.dateText !== undefined)) { hIdx = i; col = m; break; }
+        }
+        var info = { file: f.name, sheet: sn, rows: 0, used: 0, ok: hIdx >= 0 };
+        sheets.push(info);
+        if (hIdx < 0) { return; }
+        var source = f.wb.SheetNames.length > 1 ? f.name + " · " + sn : f.name;
+        for (var r = hIdx + 1; r < data.length; r++) {
+          var item = { row: data[r] || [], col: col, source: source };
+          info.rows++;
+          item.desc = normText(cellOf(item, "desc"));
+          item.title = normText(cellOf(item, "title"));
+          if (!item.desc && !item.title) { continue; }
+          info.used++;
+          rows.push(item);
+        }
+      });
+    });
+
+    // Pass 2: people. Names not on the staff list are grouped by spelling
+    // (Lakosha / LAkosha / M.Lakosha) and kept as text.
+    var formerCount = {};
+    function splitNames(raw) {
+      return normText(raw).split(/\s*(?:\/|&|,|\+|\band\b)\s*/i).map(function (x) { return x.trim(); }).filter(Boolean);
+    }
+    rows.forEach(function (x) {
+      x.names = splitNames(cellOf(x, "by"));
+      x.names.forEach(function (n) {
+        if (matchStaff(n)) { return; }
+        var key = nameTokens(n).join(" ");
+        if (!key) { return; }
+        var g = formerCount[key] = formerCount[key] || { n: 0, variants: {} };
+        g.n++;
+        g.variants[n] = (g.variants[n] || 0) + 1;
+      });
+    });
+    // A one-word spelling joins the only longer name that ends with it.
+    var formerKeys = Object.keys(formerCount), mergeTo = {};
+    formerKeys.forEach(function (k) {
+      if (k.indexOf(" ") >= 0) { return; }
+      var longer = formerKeys.filter(function (o) { return o !== k && o.indexOf(" ") > 0 && o.split(" ").pop() === k; });
+      if (longer.length === 1) { mergeTo[k] = longer[0]; }
+    });
+    var groups = {};
+    formerKeys.forEach(function (k) {
+      var to = mergeTo[k] || k;
+      var g = groups[to] = groups[to] || { n: 0, variants: {} };
+      g.n += formerCount[k].n;
+      Object.keys(formerCount[k].variants).forEach(function (v) { g.variants[v] = (g.variants[v] || 0) + formerCount[k].variants[v]; });
+    });
+    // A rare spelling one typo away from a common one joins it (Laksoha -> Lakosha).
+    var fuzzyTo = {};
+    Object.keys(groups).forEach(function (k) {
+      if (groups[k].n > 3 || k.length < 5) { return; }
+      var best = null;
+      Object.keys(groups).forEach(function (o) {
+        if (o === k || groups[o].n <= groups[k].n * 5 || o.split(" ").length !== k.split(" ").length) { return; }
+        if (typoDistance(k, o) <= 1 && (!best || groups[o].n > groups[best].n)) { best = o; }
+      });
+      if (best) { fuzzyTo[k] = best; }
+    });
+    Object.keys(fuzzyTo).forEach(function (k) {
+      var g = groups[fuzzyTo[k]];
+      g.n += groups[k].n;
+      Object.keys(groups[k].variants).forEach(function (v) { g.variants[v] = (g.variants[v] || 0) + groups[k].variants[v]; });
+      delete groups[k];
+    });
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      // The fullest spelling that is used more than a couple of times.
+      var floor = Math.max(2, g.n * 0.01);
+      var vs = Object.keys(g.variants);
+      var usable = vs.filter(function (v) { return g.variants[v] >= floor; });
+      var best = (usable.length ? usable : vs).sort(function (a, b) {
+        return nameTokens(b).length - nameTokens(a).length || g.variants[b] - g.variants[a];
+      })[0];
+      if (best === best.toLowerCase()) { best = best.replace(/\b[a-z]/g, function (ch) { return ch.toUpperCase(); }); }
+      g.display = best;
+    });
+    function person(n) {
+      var u = matchStaff(n);
+      if (u) { return { id: u.id, name: u.name, role: u.role || "" }; }
+      var key = nameTokens(n).join(" ");
+      if (!key) { return { id: null, name: n }; }
+      var k2 = mergeTo[key] || key;
+      var g = groups[fuzzyTo[k2] || k2];
+      return { id: null, name: g ? g.display : n };
+    }
+
+    // Pass 3: records.
+    var stats = { files: files.length, sheets: sheets, rows: 0, records: 0, duplicates: 0, undated: 0, tagged: 0, updates: 0, actions: 0,
+                  years: {}, people: {}, areas: {}, locations: {} };
+    var seen = {}, records = [], locCount = {};
+    rows.forEach(function (x) {
+      stats.rows++;
+      var dateCell = cellOf(x, "date");
+      var d = oldSheetDate(dateCell, false) || oldSheetDate(cellOf(x, "dateText"), true);
+      if (d && (d.y > thisYear || d.y < 1990)) { d = null; }
+      var names = x.names;
+      var author = names.length ? person(names[0]) : { id: null, name: "" };
+      var team = [];
+      names.slice(1).forEach(function (n) {
+        var p = person(n);
+        if (author.id ? p.id === author.id : p.name === author.name) { return; }
+        if (!team.some(function (m) { return m.name === p.name; })) {
+          team.push(p.id ? { id: p.id, name: p.name, role: p.role || "engineer", jobTitle: "" } : { id: null, name: p.name });
+        }
+      });
+
+      var desc = x.desc || x.title;
+      var action = normText(cellOf(x, "action"));
+      if (isStatusWord(action)) { action = ""; }
+      var docs = normText(cellOf(x, "docs"));
+      if (docs) { desc += "\n\n" + t("arcx.documents") + ": " + docs; }
+      var title = x.title || desc.split("\n")[0];
+      if (title.length > 90) { title = title.slice(0, 87).replace(/\s+\S*$/, "") + "…"; }
+
+      var key = (d ? ymdDay(d) : "nodate") + "|" + (author.id || global.Util.normalize(author.name)) + "|" +
+                global.Util.normalize(desc).slice(0, 400);
+      if (seen[key]) { stats.duplicates++; return; }
+      seen[key] = true;
+
+      // Area: the Location column, or a plant area named at the very start.
+      var loc = normText(cellOf(x, "location")).replace(/\s+/g, " ");
+      var area = "", locationText = "";
+      if (loc) {
+        var up = OLD_AREA_ALIASES[loc.toUpperCase()] || loc.toUpperCase();
+        if (areaIds[up]) { area = areaIds[up]; }
+        else { locationText = loc; locCount[up] = (locCount[up] || 0) + 1; }
+      } else {
+        var lead = /^([A-Za-z0-9\/]+)/.exec(x.title || x.desc);
+        if (lead && areaIds[lead[1].toUpperCase()]) { area = areaIds[lead[1].toUpperCase()]; }
+      }
+
+      // Instrument tags named in the subject or description (register only).
+      var tags = [];
+      ((x.title + " " + x.desc).toUpperCase().match(/[A-Z0-9][A-Z0-9-]{2,24}/g) || []).forEach(function (tok) {
+        var compact = tok.replace(/-/g, "");
+        if (compact.length < 5 || !/[A-Z]/.test(compact) || !/\d/.test(compact)) { return; }
+        var no = tagIndex[compact];
+        if (no && tags.indexOf(no) < 0) { tags.push(no); }
+      });
+
+      var createdAt = d ? ymdIso(d) : null;
+      var rec = {
+        id: prefix + hash64(key),
+        title: title,
+        description: desc,
+        status: "closed",
+        legacyStatus: normText(cellOf(x, "status")),
+        area: area,
+        location: locationText,
+        tags: tags,
+        team: team,
+        createdBy: author.id
+          ? { id: author.id, name: author.name, original: names[0] !== author.name ? names[0] : undefined }
+          : { id: null, name: author.name, original: names[0] && names[0] !== author.name ? names[0] : undefined },
+        createdAt: createdAt,
+        dateUnknown: d ? undefined : true,
+        source: x.source,
+        comments: []
+      };
+      if (!rec.createdBy.original) { delete rec.createdBy.original; }
+
+      // Managers' sheet: "Action Required", then one round of update
+      // (Progress / Updated by / Date / Action Required). The progress becomes
+      // a comment; an action marked Closed there is recorded as done; others
+      // stay as written in the old sheet (their outcome is unknown).
+      var progress = normText(cellOf(x, "progress")), updAction = normText(cellOf(x, "updAction"));
+      var ud = oldSheetDate(cellOf(x, "updDate"), false);
+      var ub = normText(cellOf(x, "updBy"));
+      var who = ub ? person(splitNames(ub)[0] || ub) : { id: null, name: "\u2014" };
+      var updAt = ud ? ymdIso(ud) : createdAt;
+      var commentId = "";
+      if (progress) {
+        commentId = "c-" + hash64(rec.id + progress);
+        rec.comments.push({ id: commentId, text: progress, at: updAt, by: { id: who.id || null, name: who.name }, imported: true });
+        stats.updates++;
+      }
+      rec.actions = [];
+      if (action) {
+        var closed = /^(closed?|completed?|done)\.?$/i.test(updAction);
+        var act = { id: "a-" + hash64(rec.id + action), text: action, status: closed ? "done" : "old", by: { id: author.id || null, name: author.name }, at: createdAt };
+        if (closed) { act.doneBy = { id: who.id || null, name: who.name }; act.doneAt = updAt; if (commentId) { act.doneComment = commentId; } }
+        rec.actions.push(act);
+      }
+      if (updAction && !isStatusWord(updAction)) {
+        rec.actions.push({ id: "a-" + hash64(rec.id + "u" + updAction), text: updAction, status: "old", by: { id: who.id || null, name: who.name }, at: updAt });
+      }
+      if (rec.actions.length) { stats.actions += rec.actions.length; } else { delete rec.actions; }
+
+      records.push(rec);
+      stats.records++;
+      if (!d) { stats.undated++; } else { stats.years[d.y] = (stats.years[d.y] || 0) + 1; }
+      if (tags.length) { stats.tagged++; }
+      if (area) { stats.areas[area] = (stats.areas[area] || 0) + 1; }
+      var pk = (author.id || "") + "|" + author.name;
+      var ps = stats.people[pk] = stats.people[pk] || { name: author.name, id: author.id, role: author.role || "", n: 0, spellings: {} };
+      ps.n++;
+      if (names[0]) { ps.spellings[names[0]] = true; }
+    });
+
+    // Locations written 20+ times become plant areas, as with the first import.
+    var newAreas = [];
+    Object.keys(locCount).forEach(function (up) {
+      if (locCount[up] >= 20 && up.length <= 14) { newAreas.push({ id: up, en: up }); }
+    });
+    if (newAreas.length) {
+      var promote = {};
+      newAreas.forEach(function (a) { promote[a.id] = true; });
+      records.forEach(function (r) {
+        var canon = r.location ? (OLD_AREA_ALIASES[r.location.toUpperCase()] || r.location.toUpperCase()) : "";
+        if (canon && promote[canon]) {
+          r.area = canon;
+          stats.areas[r.area] = (stats.areas[r.area] || 0) + 1;
+          r.location = "";
+        }
+      });
+    }
+    stats.newAreas = newAreas;
+    return {
+      bundle: {
+        kind: "plant-handover-archive", audience: db, records: records, areas: newAreas,
+        sources: files.map(function (f) { return f.name; })
+      },
+      stats: stats
+    };
+  }
+
+  var ACCOUNT_ROLES_UI = ["engineer", "manager", "administrator"];
+
+  async function archiveImport(query) {
+    var db = query && query.db === "managers" ? "managers" : "engineers";
+    if (!adminUnlocked) {
+      view().innerHTML = emptyBlock(t("imp.adminLocked")) +
+        '<div style="text-align:center"><button class="btn primary" id="imp-unlock">' + esc(t("nav.admin")) + "</button></div>";
+      $("#imp-unlock").addEventListener("click", function () { go("#/admin"); });
+      return;
+    }
+    if (!global.XLSX) { view().innerHTML = emptyBlock(t("imp.noReader")); return; }
+    try { await S.loadArchive(); } catch (e) { /* shown as none */ }
+    var info = S.archiveInfo(db);
+    var other = db === "managers" ? "engineers" : "managers";
+
+    view().innerHTML =
+      '<div class="page-head"><div><h1>' + esc(t("arcx.title")) +
+        '<span class="view-pill v-' + db + '">' + esc(t("view.pill." + db)) + "</span></h1>" +
+        "<p>" + esc(t("arcx.sub." + db)) + "</p></div>" +
+        '<div class="spacer"></div><button class="btn ghost" id="arc-back">' + esc(t("common.back")) + "</button></div>" +
+      '<div class="card db-card v-' + db + '">' +
+        '<p class="small" style="margin:0 0 6px"><b>' + esc(t("arcx.now")) + "</b> " +
+          esc(info ? t("arc.current", { n: global.Fmt.num(info.count), date: global.Fmt.dateTime(info.importedAt), by: info.by || "—" }) : t("arc.none")) + "</p>" +
+        '<p class="small faint" style="margin:0 0 12px">' + esc(t("arcx.how", { other: t("view.pill." + other) })) + "</p>" +
+        '<div class="dropzone imp-drop" id="imp-drop">' +
+          '<div class="imp-drop-icon" aria-hidden="true">&#8681;</div>' +
+          '<div class="imp-drop-text">' + esc(t("arcx.dropHere")) + "</div>" +
+          '<div class="small faint" style="margin:6px 0 10px">' + esc(t("imp.or")) + "</div>" +
+          '<button class="btn primary" id="arc-pick" type="button">' + esc(t("arcx.choose")) + "</button>" +
+        "</div>" +
+        '<input type="file" id="arc-file" multiple accept=".xlsx,.xlsm,.xls,.json,application/json" class="hidden">' +
+      "</div>" +
+      '<div id="arc-result" style="margin-top:16px"></div>';
+
+    $("#arc-back").addEventListener("click", function () { go("#/admin"); });
+    $("#arc-pick").addEventListener("click", function (e) { e.stopPropagation(); $("#arc-file").click(); });
+    $("#arc-file").addEventListener("change", function (e) {
+      var list = Array.prototype.slice.call(e.target.files || []);
+      e.target.value = "";
+      handleFiles(list);
+    });
+    var zone = $("#imp-drop"), depth = 0;
+    zone.addEventListener("click", function () { $("#arc-file").click(); });
+    zone.addEventListener("dragenter", function (e) { e.preventDefault(); depth++; zone.classList.add("over"); });
+    zone.addEventListener("dragleave", function () { if (--depth <= 0) { depth = 0; zone.classList.remove("over"); } });
+    zone.addEventListener("dragover", function (e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      depth = 0; zone.classList.remove("over");
+      handleFiles(Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []));
+    });
+    importDropTarget = function (files) { handleFiles(Array.prototype.slice.call(files || [])); };
+    installPageDrop();
+
+    async function handleFiles(list) {
+      if (!list.length) { return; }
+      var bad = list.filter(function (f) { return !/\.(xlsx|xlsm|xls|json)$/i.test(f.name); });
+      if (bad.length) { global.UI.toast(t("arcx.badType", { v: bad[0].name }), "err"); return; }
+      var json = list.filter(function (f) { return /\.json$/i.test(f.name); });
+      if (json.length && list.length > 1) { global.UI.toast(t("arcx.jsonAlone"), "err"); return; }
+      global.UI.busy(true, t("arcx.reading"));
+      var result = null, error = "";
+      try {
+        if (json.length) {
+          var bundle = null;
+          try { bundle = JSON.parse(await json[0].text()); } catch (e) { bundle = null; }
+          if (!bundle || bundle.kind !== "plant-handover-archive" || !Array.isArray(bundle.records)) { error = t("arc.badFile"); }
+          else if ((bundle.audience || "engineers") !== db) { error = t("arcx.wrongDb", { db: t("view.pill." + (bundle.audience || "engineers")) }); }
+          else { result = { bundle: bundle, stats: null, fileNames: [json[0].name] }; }
+        } else {
+          var files = [];
+          for (var i = 0; i < list.length; i++) {
+            var lab = document.getElementById("busy-label");
+            if (lab) { lab.textContent = t("arcx.readingFile", { name: list[i].name }); }
+            files.push({ name: list[i].name, wb: global.XLSX.read(new Uint8Array(await list[i].arrayBuffer()), { type: "array", cellDates: false }) });
+          }
+          result = convertOldSheets(files, db);
+          result.fileNames = list.map(function (f) { return f.name; });
+          if (!result.bundle.records.length) { error = t("arcx.nothing"); }
+        }
+      } catch (err) {
+        S.log("archive import: could not read", err && err.message);
+        error = t("imp.badFile");
+      }
+      global.UI.busy(false);
+      if (error) { $("#arc-result").innerHTML = '<div class="card"><p class="err-msg">' + esc(error) + "</p></div>"; return; }
+      showPreview(result);
+    }
+
+    function statBox(n, text) {
+      return '<div class="stat" style="cursor:default"><div class="n">' + n + '</div><div class="l">' + esc(text) + "</div></div>";
+    }
+
+    function showPreview(res) {
+      var b = res.bundle, st = res.stats, n = b.records.length;
+      var html = '<div class="card">' +
+        '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<div><h3 style="margin:0">' + esc(t("imp.preview", { file: res.fileNames.join(", ") })) + "</h3>" +
+          '<p class="small faint" style="margin:4px 0 0">' + esc(st
+            ? t("arcx.summary", { n: global.Fmt.num(n), dup: global.Fmt.num(st.duplicates), rows: global.Fmt.num(st.rows) })
+            : t("arcx.summaryJson", { n: global.Fmt.num(n) })) + "</p></div>" +
+          '<div class="spacer" style="flex:1"></div>' +
+          '<button class="btn primary" id="arc-go">' + esc(t("arcx.go", { n: global.Fmt.num(n), db: t("view.pill." + db) })) + "</button>" +
+        "</div>" +
+        (info ? '<p class="imp-w" style="margin:12px 0 0">' + esc(t("arcx.replaces", { n: global.Fmt.num(info.count), db: t("view.pill." + db) })) + "</p>" : "");
+
+      if (st) {
+        var years = Object.keys(st.years).sort();
+        html += '<div class="grid stats" style="margin-top:14px">' +
+          statBox(global.Fmt.num(n), t("arcx.sHandovers")) +
+          statBox(years.length ? esc(years[0] + (years.length > 1 ? "–" + years[years.length - 1] : "")) : "—", t("arcx.sYears")) +
+          statBox(global.Fmt.num(st.undated), t("arcx.sUndated")) +
+          statBox(global.Fmt.num(st.tagged), t("arcx.sTagged")) +
+          statBox(global.Fmt.num(Object.keys(st.areas).reduce(function (s0, k) { return s0 + st.areas[k]; }, 0)), t("arcx.sArea")) +
+          statBox(global.Fmt.num(st.updates), t("arcx.sUpdates")) +
+          statBox(global.Fmt.num(st.actions), t("arcx.sActions")) +
+          "</div>";
+        if (st.newAreas.length) {
+          html += '<p class="small" style="margin:12px 0 0">' + esc(t("arcx.newAreas", { v: st.newAreas.map(function (a) { return a.id; }).join(", ") })) + "</p>";
+        }
+
+        var people = Object.keys(st.people).map(function (k) { return st.people[k]; }).sort(function (a, c) { return c.n - a.n; });
+        html += "<h4 style=\"margin:18px 0 6px\">" + esc(t("arcx.whoTitle")) + "</h4>" +
+          '<p class="small faint" style="margin:0 0 8px">' + esc(t("arcx.whoDesc")) + "</p>" +
+          '<div style="overflow:auto;max-height:420px"><table class="table imp-table"><thead><tr>' +
+            "<th>" + esc(t("arcx.savedAs")) + "</th><th>" + esc(t("arcx.spellings")) + "</th><th>" + esc(t("arcx.match")) + "</th><th>" + esc(t("arcx.count")) + "</th>" +
+          "</tr></thead><tbody>" +
+          people.map(function (p) {
+            var spell = Object.keys(p.spellings);
+            return '<tr class="' + (p.id ? "imp-ok" : "imp-warn") + '"><td><b>' + esc(p.name || t("arcx.noName")) + "</b></td>" +
+              "<td>" + esc(spell.slice(0, 6).join(", ") + (spell.length > 6 ? " +" + (spell.length - 6) : "")) + "</td>" +
+              "<td>" + esc(p.id ? t("arcx.onStaff", { role: t("role." + (p.role || "engineer")) }) : (p.name ? t("arcx.former") : "—")) + "</td>" +
+              "<td>" + global.Fmt.num(p.n) + "</td></tr>";
+          }).join("") +
+          "</tbody></table></div>";
+
+        html += "<h4 style=\"margin:18px 0 6px\">" + esc(t("arcx.sheetsTitle")) + "</h4>" +
+          '<div style="overflow:auto"><table class="table"><thead><tr><th>' + esc(t("arcx.file")) + "</th><th>" + esc(t("arcx.sheet")) +
+          "</th><th>" + esc(t("arcx.rowsRead")) + "</th></tr></thead><tbody>" +
+          st.sheets.map(function (sh) {
+            return "<tr><td>" + esc(sh.file) + "</td><td>" + esc(sh.sheet) + "</td><td>" +
+              (sh.ok ? global.Fmt.num(sh.used) : '<span class="faint">' + esc(t("arcx.noHeader")) + "</span>") + "</td></tr>";
+          }).join("") + "</tbody></table></div>";
+      }
+      html += "</div>";
+      $("#arc-result").innerHTML = html;
+      $("#arc-go").addEventListener("click", function () { runArchiveImport(res); });
+    }
+
+    async function runArchiveImport(res) {
+      var n = res.bundle.records.length;
+      var ok = await global.UI.confirm(
+        t(info ? "arcx.confirmReplace" : "arcx.confirm", { n: global.Fmt.num(n), db: t("view.pill." + db), old: info ? global.Fmt.num(info.count) : "0" }),
+        { okLabel: t("arcx.go", { n: global.Fmt.num(n), db: t("view.pill." + db) }) });
+      if (!ok) { return; }
+      global.UI.busy(true, t("common.saving"));
+      try {
+        var me = global.App.user();
+        var done = await S.importArchive(res.bundle, me ? me.name : "", function (i, total, name) {
+          var lab = document.getElementById("busy-label");
+          if (lab) { lab.textContent = t("arc.progress", { i: global.Fmt.num(i), n: global.Fmt.num(total), name: name }); }
+        }, db);
+        global.UI.busy(false);
+        global.UI.toast(t("arcx.done", { n: global.Fmt.num(done.count), db: t("view.pill." + db) }), "ok");
+        go("#/admin");
+      } catch (err) {
+        global.UI.busy(false);
+        S.log("archive import failed", err && (err.name + ": " + err.message));
+        global.UI.toast(err && err.name === "AudienceError" ? t("arcx.wrongDb", { db: t("view.pill." + err.audience) })
+          : err && err.name === "FormatError" ? t("arc.badFile") : t("err.write"), "err");
+      }
+    }
+  }
+
   global.Views = {
     dashboard: dashboard,
     handoverList: handoverList,
     handoverForm: handoverForm,
     handoverDetail: handoverDetail,
     handoverImport: handoverImport,
+    archiveImport: archiveImport,
+    onViewChange: function () { if (formViewHook) { formViewHook(); } },
     equipmentList: equipmentList,
     equipmentDetail: equipmentDetail,
     notifications: notifications,
